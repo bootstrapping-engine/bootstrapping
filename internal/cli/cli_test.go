@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -222,7 +223,12 @@ func TestParseTake(t *testing.T) {
 
 func TestOddDatabaseName(t *testing.T) {
 	// A file name with the characters a SQLite URI gives a meaning to.
-	path := filepath.Join(t.TempDir(), "my app?v=1#2%41.db")
+	// Windows doesn't allow "?" in a file name.
+	name := "my app?v=1#2%41.db"
+	if runtime.GOOS == "windows" {
+		name = "my app#2%41.db"
+	}
+	path := filepath.Join(t.TempDir(), name)
 	db, err := sql.Open("sqlite3", dsn(path))
 	if err != nil {
 		t.Fatal(err)
