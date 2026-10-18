@@ -1,0 +1,42 @@
+# Which role holds which permission, by name. Bootstrapping turns the names
+# into the rows' ids. A link dropped from the seed is deleted.
+table = "role_permissions"
+key = ["role_id", "permission_id"]
+on_remove = "delete"
+
+[refs]
+role_id = "roles.code"
+permission_id = "permissions.code"
+
+[[row]]
+role_id = "admin"
+permission_id = "posts.read"
+[[row]]
+role_id = "admin"
+permission_id = "posts.write"
+[[row]]
+role_id = "admin"
+permission_id = "posts.publish"
+[[row]]
+role_id = "admin"
+permission_id = "posts.delete"
+[[row]]
+role_id = "admin"
+permission_id = "users.manage"
+
+[[row]]
+role_id = "editor"
+permission_id = "posts.read"
+[[row]]
+role_id = "editor"
+permission_id = "posts.write"
+[[row]]
+role_id = "editor"
+permission_id = "posts.publish"
+[[row]]
+role_id = "editor"
+permission_id = "posts.delete"
+
+[[row]]
+role_id = "viewer"
+permission_id = "posts.read"

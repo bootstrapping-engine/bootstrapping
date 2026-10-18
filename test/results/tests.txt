@@ -1,0 +1,116 @@
+# Every test, verbose, at 10 times the CI size; the promise, crash, process and affinity tests also write the JSON files here
+# recorded 2026-10-18 20:06 UTC at no commit plus uncommitted changes, Bootstrapping 0.1.0, go1.24.7 linux/amd64
+# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
+# command: BS_SCALE=10 go test -count=1 -v -timeout 60m ./...
+
+=== RUN   TestAffinityMatchesSQLite
+    value_test.go:115: 16 declared types, 4051 values, 129632 checks
+--- PASS: TestAffinityMatchesSQLite (4.69s)
+=== RUN   TestValueEncoding
+--- PASS: TestValueEncoding (0.00s)
+=== RUN   TestAdoptExistingRows
+--- PASS: TestAdoptExistingRows (0.01s)
+=== RUN   TestNewlyManagedColumn
+--- PASS: TestNewlyManagedColumn (0.01s)
+=== RUN   TestRestoreAndUnretire
+--- PASS: TestRestoreAndUnretire (0.01s)
+=== RUN   TestRemovedButEdited
+--- PASS: TestRemovedButEdited (0.01s)
+=== RUN   TestOnConflictInSeedFile
+--- PASS: TestOnConflictInSeedFile (0.01s)
+=== RUN   TestReferences
+--- PASS: TestReferences (0.01s)
+=== RUN   TestRenameOfDeletedRow
+--- PASS: TestRenameOfDeletedRow (0.01s)
+=== RUN   TestTypedColumnsStayInSync
+--- PASS: TestTypedColumnsStayInSync (0.00s)
+=== RUN   TestSchemaErrors
+--- PASS: TestSchemaErrors (0.02s)
+=== RUN   TestLedgerAndExplain
+--- PASS: TestLedgerAndExplain (0.01s)
+=== RUN   TestProgressAndRollback
+--- PASS: TestProgressAndRollback (0.00s)
+=== RUN   TestCrash
+    process_test.go:256: {Rows:1500 Statements:1767 ApplySeconds:0.150281169 Trials:400 KilledMidway:200 KilledByTimer:200 FoundBefore:248 FoundAfter:152 IntegrityPassed:400 ReappliesMatched:400}
+--- PASS: TestCrash (130.49s)
+=== RUN   TestProcesses
+    process_test.go:338: {Rounds:60 Processes:8 Applies:480 Wrote:60 FoundNothing:420 StatesMatched:60}
+--- PASS: TestProcesses (32.65s)
+=== RUN   TestPromise
+    promise_test.go:84: {Histories:1200 SeedVersions:14400 Applies:14400 Blocked:3618 ValuesChecked:492228 RowsChecked:258768 KeptEdits:47330 SeedLanded:25870 Conflicts:32015 SettledSeed:11034 SettledLocal:10439 LocalDeletes:30063 Retired:4020 Deleted:2617 RepeatsChecked:10782}
+--- PASS: TestPromise (35.66s)
+=== RUN   TestParseTable
+--- PASS: TestParseTable (0.00s)
+=== RUN   TestParseTableErrors
+--- PASS: TestParseTableErrors (0.00s)
+=== RUN   TestSetOrder
+--- PASS: TestSetOrder (0.00s)
+=== RUN   TestStory
+--- PASS: TestStory (0.02s)
+PASS
+ok  	github.com/bootstrapping-engine/bootstrapping	203.616s
+?   	github.com/bootstrapping-engine/bootstrapping/cmd/bootstrapping	[no test files]
+?   	github.com/bootstrapping-engine/bootstrapping/cmd/bst	[no test files]
+=== RUN   TestDemo
+Bootstrapping demo: an application's roles and permissions, through three
+seed versions, with an admin's edits in between.
+
+1. Ship v1 to an empty database.
+   Applied as run 1: 18 inserts.
+
+2. An admin renames the Editor role to "Content Editor" and takes
+   posts.delete away from editors.
+
+3. Ship v2: a billing permission for admins, Viewer renamed to Reader,
+   and a new description for Editor. The plan:
+
+   permissions
+     insert       billing.view
+   roles
+     update       editor                description  "Writes and publishes posts" -> "Writes, edits and publishes posts"
+     keep edit    editor                name         local "Content Editor"; the seed still says "Editor"
+     update       viewer                name         "Viewer" -> "Reader"
+   role_permissions
+     insert       admin, billing.view
+     keep delete  editor, posts.delete               deleted locally; it stays deleted
+
+   Pending: 2 inserts, 2 updates, 1 local edit kept, 1 local delete kept.
+   Applied as run 2: 2 inserts, 2 updates, 1 local edit kept, 1 local delete kept.
+
+4. Ship v3. It drops users.manage, and it renames Editor too, to
+   "Editorial". That's a conflict with the admin's name, so the apply
+   stops before writing anything:
+
+   permissions
+     retire       users.manage                dropped from the seed
+   roles
+     CONFLICT     editor                name  seed "Editor" -> "Editorial", local "Content Editor"
+   role_permissions
+     keep delete  editor, posts.delete        deleted locally; it stays deleted
+     delete       admin, users.manage         dropped from the seed
+
+   Blocked: 1 delete, 1 retire, 1 conflict, 1 local delete kept.
+
+5. Settle it by keeping the admin's name, and kill the apply halfway
+   through, after its first statement.
+   Killed after 1 statement. The database is exactly as v2 left it,
+   and SQLite's integrity check passes.
+
+6. Run the same apply again.
+   Applied as run 3: 1 delete, 1 retire, 1 settled conflict, 1 local delete kept.
+   The next plan: In step with the seed (1 local edit kept, 1 local delete kept).
+
+All checks passed (17).
+--- PASS: TestDemo (0.03s)
+PASS
+ok  	github.com/bootstrapping-engine/bootstrapping/examples/permissions	0.034s
+=== RUN   TestCommandStory
+--- PASS: TestCommandStory (0.03s)
+=== RUN   TestCommandEnvAndInit
+--- PASS: TestCommandEnvAndInit (0.02s)
+=== RUN   TestCommandErrors
+--- PASS: TestCommandErrors (0.01s)
+=== RUN   TestParseTake
+--- PASS: TestParseTake (0.00s)
+PASS
+ok  	github.com/bootstrapping-engine/bootstrapping/internal/cli	0.061s

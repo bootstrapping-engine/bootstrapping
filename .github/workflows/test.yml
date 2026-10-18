@@ -1,0 +1,104 @@
+name: test
+
+# Every push to main and every pull request: formatting, vet, the full test
+# suite (the story, random histories against the merge rules, applies
+# killed halfway, eight processes on one file, the type affinity checked
+# against SQLite, the command) on Linux, macOS and Windows, the race
+# detector on Linux, the release plan's cases, and the smoke check on
+# release-style binaries. A passing run on main starts the release
+# workflow, which releases a raised version.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  BUILD_TAGS: sqlite_omit_load_extension,osusergo,netgo
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go: ["1.26.x"]
+        include:
+          # The oldest Go that go.mod allows.
+          - os: ubuntu-latest
+            go: "1.24.x"
+    runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - name: Tests
+        run: |
+          set -o pipefail
+          go test -count=1 ./... 2>&1 | tee test-output.txt
+      - name: Report failing tests as annotations
+        if: failure()
+        run: |
+          grep -E -- '--- FAIL|_test\.go:[0-9]+|panic:|^FAIL' test-output.txt | head -40 | while IFS= read -r line; do
+            echo "::error::${line//%/%25}"
+          done
+      - if: runner.os == 'Linux' && matrix.go == '1.26.x'
+        run: go test -race -count=1 ./...
+      - name: Release plan cases
+        run: python3 -B -m unittest discover -s scripts -p '*_test.py'
+      - name: Smoke check on release-style binaries
+        run: |
+          static=""
+          if [ "$RUNNER_OS" = Linux ]; then static='-extldflags "-static"'; fi
+          mkdir bin
+          for c in bootstrapping bst; do
+            go build -trimpath -tags "$BUILD_TAGS" -ldflags "-s -w $static" -o "bin/$c" "./cmd/$c"
+          done
+          go build -trimpath -tags "$BUILD_TAGS" -ldflags "-s -w $static" -o bin/bootstrapping-demo ./examples/permissions
+          python3 -B scripts/smoke.py bin
+
+  # The SQLite driver is cgo, so Windows needs a C compiler: MinGW from MSYS2.
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+          path-type: inherit
+      - run: go vet ./...
+      - name: Tests
+        run: |
+          set -o pipefail
+          go test -count=1 ./... 2>&1 | tee test-output.txt
+      - name: Report failing tests as annotations
+        if: failure()
+        run: |
+          grep -E -- '--- FAIL|_test\.go:[0-9]+|panic:|^FAIL' test-output.txt | head -40 | while IFS= read -r line; do
+            echo "::error::${line//%/%25}"
+          done
+      - name: Smoke check on release-style binaries
+        run: |
+          mkdir bin
+          for c in bootstrapping bst; do
+            go build -trimpath -tags "$BUILD_TAGS" -ldflags '-s -w -extldflags "-static"' -o "bin/$c.exe" "./cmd/$c"
+          done
+          go build -trimpath -tags "$BUILD_TAGS" -ldflags '-s -w -extldflags "-static"' -o bin/bootstrapping-demo.exe ./examples/permissions
+          python -B scripts/smoke.py bin

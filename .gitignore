@@ -1,0 +1,9 @@
+/bootstrapping
+/bst
+/bootstrapping-demo
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+coverage.out
+/scripts/__pycache__/

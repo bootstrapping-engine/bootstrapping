@@ -1,0 +1,26 @@
+# The roles the application ships with. Admins rename roles and rewrite
+# descriptions; the system flag is the application's to decide.
+table = "roles"
+key = "code"
+on_remove = { retire = "retired_at" }
+
+[columns]
+system = "seed"
+
+[[row]]
+code = "admin"
+name = "Administrator"
+description = "Everything, including users and billing"
+system = true
+
+[[row]]
+code = "editor"
+name = "Editor"
+description = "Writes and publishes posts"
+system = true
+
+[[row]]
+code = "viewer"
+name = "Viewer"
+description = "Reads posts"
+system = true

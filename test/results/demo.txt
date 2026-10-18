@@ -1,0 +1,54 @@
+# The demo: roles and permissions through three seed versions, a conflict and an apply killed halfway
+# recorded 2026-10-18 20:12 UTC at no commit plus uncommitted changes, Bootstrapping 0.1.0, go1.24.7 linux/amd64
+# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
+# command: bootstrapping-demo
+
+Bootstrapping demo: an application's roles and permissions, through three
+seed versions, with an admin's edits in between.
+
+1. Ship v1 to an empty database.
+   Applied as run 1: 18 inserts.
+
+2. An admin renames the Editor role to "Content Editor" and takes
+   posts.delete away from editors.
+
+3. Ship v2: a billing permission for admins, Viewer renamed to Reader,
+   and a new description for Editor. The plan:
+
+   permissions
+     insert       billing.view
+   roles
+     update       editor                description  "Writes and publishes posts" -> "Writes, edits and publishes posts"
+     keep edit    editor                name         local "Content Editor"; the seed still says "Editor"
+     update       viewer                name         "Viewer" -> "Reader"
+   role_permissions
+     insert       admin, billing.view
+     keep delete  editor, posts.delete               deleted locally; it stays deleted
+
+   Pending: 2 inserts, 2 updates, 1 local edit kept, 1 local delete kept.
+   Applied as run 2: 2 inserts, 2 updates, 1 local edit kept, 1 local delete kept.
+
+4. Ship v3. It drops users.manage, and it renames Editor too, to
+   "Editorial". That's a conflict with the admin's name, so the apply
+   stops before writing anything:
+
+   permissions
+     retire       users.manage                dropped from the seed
+   roles
+     CONFLICT     editor                name  seed "Editor" -> "Editorial", local "Content Editor"
+   role_permissions
+     keep delete  editor, posts.delete        deleted locally; it stays deleted
+     delete       admin, users.manage         dropped from the seed
+
+   Blocked: 1 delete, 1 retire, 1 conflict, 1 local delete kept.
+
+5. Settle it by keeping the admin's name, and kill the apply halfway
+   through, after its first statement.
+   Killed after 1 statement. The database is exactly as v2 left it,
+   and SQLite's integrity check passes.
+
+6. Run the same apply again.
+   Applied as run 3: 1 delete, 1 retire, 1 settled conflict, 1 local delete kept.
+   The next plan: In step with the seed (1 local edit kept, 1 local delete kept).
+
+All checks passed (17).

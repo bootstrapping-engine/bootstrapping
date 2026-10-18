@@ -1,0 +1,23 @@
+table = "permissions"
+key = "code"
+on_remove = { retire = "retired_at" }
+
+[[row]]
+code = "posts.read"
+description = "Read posts"
+
+[[row]]
+code = "posts.write"
+description = "Write and edit drafts"
+
+[[row]]
+code = "posts.publish"
+description = "Publish posts"
+
+[[row]]
+code = "posts.delete"
+description = "Delete posts"
+
+[[row]]
+code = "billing.view"
+description = "See invoices and the plan"
