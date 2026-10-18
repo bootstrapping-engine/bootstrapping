@@ -1,10 +1,10 @@
 # The release smoke check on static binaries built as the release workflow builds them
-# recorded 2026-10-18 20:12 UTC at no commit plus uncommitted changes, Bootstrapping 0.1.0, go1.24.7 linux/amd64
+# recorded 2026-10-18 21:06 UTC at 157f026, Bootstrapping 0.1.0, go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
 # command: python3 scripts/smoke.py BIN
 
-# 5401424 bytes  bootstrapping
-# 5599824 bytes  bootstrapping-demo
-# 5401424 bytes  bst
+# 5442608 bytes  bootstrapping
+# 5636816 bytes  bootstrapping-demo
+# 5442608 bytes  bst
 
 smoke: 37 checks passed

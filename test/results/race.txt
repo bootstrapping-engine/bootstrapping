@@ -1,10 +1,10 @@
 # Every test with the race detector, at CI size
-# recorded 2026-10-18 20:09 UTC at no commit plus uncommitted changes, Bootstrapping 0.1.0, go1.24.7 linux/amd64
+# recorded 2026-10-18 21:05 UTC at 157f026, Bootstrapping 0.1.0, go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
 # command: go test -race -count=1 ./...
 
-ok  	github.com/bootstrapping-engine/bootstrapping	86.754s
+ok  	github.com/bootstrapping-engine/bootstrapping	98.032s
 ?   	github.com/bootstrapping-engine/bootstrapping/cmd/bootstrapping	[no test files]
 ?   	github.com/bootstrapping-engine/bootstrapping/cmd/bst	[no test files]
-ok  	github.com/bootstrapping-engine/bootstrapping/examples/permissions	1.088s
-ok  	github.com/bootstrapping-engine/bootstrapping/internal/cli	1.099s
+ok  	github.com/bootstrapping-engine/bootstrapping/examples/permissions	1.149s
+ok  	github.com/bootstrapping-engine/bootstrapping/internal/cli	1.154s

@@ -48,8 +48,8 @@ convert BOOLEAN, DATE and DATETIME values by type name.
 `sh scripts/record-tests.sh` runs every test at ten times the CI size (set
 `BS_SCALE` to change it), the race detector, the release plan's cases, the
 demo and the smoke check on static binaries, and writes them to
-`test/results/`, with JSON figures from the promise, crash, process and
-affinity tests. Every number in the README and on the site comes from those
+`test/results/`, with JSON figures from the promise, references, crash,
+process and affinity tests. Every number in the README and on the site comes from those
 files; record again after any change that could move them. It needs Go, a C
 compiler and Python 3.
 

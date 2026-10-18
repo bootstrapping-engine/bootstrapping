@@ -228,10 +228,19 @@ Every number here comes from [test/results](test/results), recorded by
   was applied. 47,330 local edits kept, 25,870 seed changes landed, 21,473
   conflicts settled either way, 3,618 applies blocked with nothing written,
   and no value overwritten without a conflict.
+- **References, with foreign keys on.** 600 histories of 10 seed versions
+  through three linked tables: roles that point at a parent role,
+  permissions, and the links between them. Roles were added, dropped,
+  renamed and moved between parents while an admin edited links and
+  deleted them. Every one of the 6,000 applies did exactly what its preview
+  said, and SQLite found no foreign key violation after any of them. 1,097
+  renames kept their row's id, 2,016 deletes waited while something still
+  pointed at the row, and 1,819 of 2,078 edited notes were kept (the rest
+  were conflicts settled for the seed).
 - **Killed halfway.** 400 applies of a 1,500-row seed, killed with SIGKILL
   after a random statement or at a random moment. Every one left the
-  database exactly as it was (248) or exactly as a finished apply leaves it
-  (152), passed SQLite's integrity check, and reached the clean result when
+  database exactly as it was (269) or exactly as a finished apply leaves it
+  (131), passed SQLite's integrity check, and reached the clean result when
   applied again.
 - **Many processes, one file.** 60 rounds of eight processes applying the
   same seed at once. Each round, exactly one wrote and seven found nothing

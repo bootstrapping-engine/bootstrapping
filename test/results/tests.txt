@@ -1,11 +1,11 @@
 # Every test, verbose, at 10 times the CI size; the promise, crash, process and affinity tests also write the JSON files here
-# recorded 2026-10-18 20:06 UTC at no commit plus uncommitted changes, Bootstrapping 0.1.0, go1.24.7 linux/amd64
+# recorded 2026-10-18 21:01 UTC at 157f026, Bootstrapping 0.1.0, go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
 # command: BS_SCALE=10 go test -count=1 -v -timeout 60m ./...
 
 === RUN   TestAffinityMatchesSQLite
     value_test.go:115: 16 declared types, 4051 values, 129632 checks
---- PASS: TestAffinityMatchesSQLite (4.69s)
+--- PASS: TestAffinityMatchesSQLite (4.07s)
 === RUN   TestValueEncoding
 --- PASS: TestValueEncoding (0.00s)
 === RUN   TestAdoptExistingRows
@@ -15,11 +15,11 @@
 === RUN   TestRestoreAndUnretire
 --- PASS: TestRestoreAndUnretire (0.01s)
 === RUN   TestRemovedButEdited
---- PASS: TestRemovedButEdited (0.01s)
+--- PASS: TestRemovedButEdited (0.02s)
 === RUN   TestOnConflictInSeedFile
 --- PASS: TestOnConflictInSeedFile (0.01s)
 === RUN   TestReferences
---- PASS: TestReferences (0.01s)
+--- PASS: TestReferences (0.02s)
 === RUN   TestRenameOfDeletedRow
 --- PASS: TestRenameOfDeletedRow (0.01s)
 === RUN   TestTypedColumnsStayInSync
@@ -31,14 +31,49 @@
 === RUN   TestProgressAndRollback
 --- PASS: TestProgressAndRollback (0.00s)
 === RUN   TestCrash
-    process_test.go:256: {Rows:1500 Statements:1767 ApplySeconds:0.150281169 Trials:400 KilledMidway:200 KilledByTimer:200 FoundBefore:248 FoundAfter:152 IntegrityPassed:400 ReappliesMatched:400}
---- PASS: TestCrash (130.49s)
+    process_test.go:256: {Rows:1500 Statements:1767 ApplySeconds:0.134160147 Trials:400 KilledMidway:200 KilledByTimer:200 FoundBefore:269 FoundAfter:131 IntegrityPassed:400 ReappliesMatched:400}
+--- PASS: TestCrash (123.55s)
 === RUN   TestProcesses
     process_test.go:338: {Rounds:60 Processes:8 Applies:480 Wrote:60 FoundNothing:420 StatesMatched:60}
---- PASS: TestProcesses (32.65s)
+--- PASS: TestProcesses (33.85s)
 === RUN   TestPromise
     promise_test.go:84: {Histories:1200 SeedVersions:14400 Applies:14400 Blocked:3618 ValuesChecked:492228 RowsChecked:258768 KeptEdits:47330 SeedLanded:25870 Conflicts:32015 SettledSeed:11034 SettledLocal:10439 LocalDeletes:30063 Retired:4020 Deleted:2617 RepeatsChecked:10782}
---- PASS: TestPromise (35.66s)
+--- PASS: TestPromise (41.01s)
+=== RUN   TestPromiseReferences
+    refs_promise_test.go:67: {Histories:600 Applies:6000 Blocked:764 Renames:1097 IDsKept:1097 NotesChecked:2078 NotesKept:1819 Skipped:3818 Protected:2016 Deleted:1881 FKChecks:6000}
+--- PASS: TestPromiseReferences (33.30s)
+=== RUN   TestSelfReferenceToSkippedRow
+--- PASS: TestSelfReferenceToSkippedRow (0.01s)
+=== RUN   TestSelfReferenceToDroppedRow
+--- PASS: TestSelfReferenceToDroppedRow (0.01s)
+=== RUN   TestReferenceByNonKeyColumn
+--- PASS: TestReferenceByNonKeyColumn (0.01s)
+=== RUN   TestRepointAndDropWithForeignKeys
+--- PASS: TestRepointAndDropWithForeignKeys (0.02s)
+=== RUN   TestDropRowStillListedByChild
+--- PASS: TestDropRowStillListedByChild (0.01s)
+=== RUN   TestDroppedRowWhoseReferenceIsNoLongerNamed
+--- PASS: TestDroppedRowWhoseReferenceIsNoLongerNamed (0.01s)
+=== RUN   TestParentRenameKeepsChildEdits
+--- PASS: TestParentRenameKeepsChildEdits (0.01s)
+=== RUN   TestChainedRenameIsRefused
+--- PASS: TestChainedRenameIsRefused (0.00s)
+=== RUN   TestLedgerOnlyWritesAreShown
+--- PASS: TestLedgerOnlyWritesAreShown (0.01s)
+=== RUN   TestRetireColumnMustAllowNull
+--- PASS: TestRetireColumnMustAllowNull (0.01s)
+=== RUN   TestNullKeysAreLeftAlone
+--- PASS: TestNullKeysAreLeftAlone (0.01s)
+=== RUN   TestKeptRowKeepsItsParent
+--- PASS: TestKeptRowKeepsItsParent (0.01s)
+=== RUN   TestDropParentAndChildTogether
+--- PASS: TestDropParentAndChildTogether (0.01s)
+=== RUN   TestDropRowsThatPointAtEachOther
+--- PASS: TestDropRowsThatPointAtEachOther (0.01s)
+=== RUN   TestLateDeleteWaitsForItsParent
+--- PASS: TestLateDeleteWaitsForItsParent (0.01s)
+=== RUN   TestSkippedSelfReferenceLeavesLedgerAlone
+--- PASS: TestSkippedSelfReferenceLeavesLedgerAlone (0.01s)
 === RUN   TestParseTable
 --- PASS: TestParseTable (0.00s)
 === RUN   TestParseTableErrors
@@ -46,9 +81,9 @@
 === RUN   TestSetOrder
 --- PASS: TestSetOrder (0.00s)
 === RUN   TestStory
---- PASS: TestStory (0.02s)
+--- PASS: TestStory (0.01s)
 PASS
-ok  	github.com/bootstrapping-engine/bootstrapping	203.616s
+ok  	github.com/bootstrapping-engine/bootstrapping	236.051s
 ?   	github.com/bootstrapping-engine/bootstrapping/cmd/bootstrapping	[no test files]
 ?   	github.com/bootstrapping-engine/bootstrapping/cmd/bst	[no test files]
 === RUN   TestDemo
@@ -103,14 +138,20 @@ seed versions, with an admin's edits in between.
 All checks passed (17).
 --- PASS: TestDemo (0.03s)
 PASS
-ok  	github.com/bootstrapping-engine/bootstrapping/examples/permissions	0.034s
+ok  	github.com/bootstrapping-engine/bootstrapping/examples/permissions	0.036s
 === RUN   TestCommandStory
---- PASS: TestCommandStory (0.03s)
+--- PASS: TestCommandStory (0.04s)
 === RUN   TestCommandEnvAndInit
---- PASS: TestCommandEnvAndInit (0.02s)
+--- PASS: TestCommandEnvAndInit (0.01s)
 === RUN   TestCommandErrors
---- PASS: TestCommandErrors (0.01s)
+--- PASS: TestCommandErrors (0.00s)
 === RUN   TestParseTake
 --- PASS: TestParseTake (0.00s)
+=== RUN   TestOddDatabaseName
+--- PASS: TestOddDatabaseName (0.01s)
+=== RUN   TestFlagsAfterArguments
+--- PASS: TestFlagsAfterArguments (0.01s)
+=== RUN   TestFlagErrorsAsJSON
+--- PASS: TestFlagErrorsAsJSON (0.00s)
 PASS
-ok  	github.com/bootstrapping-engine/bootstrapping/internal/cli	0.061s
+ok  	github.com/bootstrapping-engine/bootstrapping/internal/cli	0.077s

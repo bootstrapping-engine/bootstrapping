@@ -37,7 +37,7 @@ header() {
 go vet ./...
 
 cmd="BS_SCALE=$scale go test -count=1 -v -timeout 60m ./..."
-{ header "Every test, verbose, at $scale times the CI size; the promise, crash, process and affinity tests also write the JSON files here" "$cmd"
+{ header "Every test, verbose, at $scale times the CI size; the tests that measure something also write the JSON files here" "$cmd"
   BS_SCALE=$scale BS_RESULTS="$(pwd)/$out" go test -count=1 -v -timeout 60m ./... 2>&1; } > "$out/tests.txt"
 
 cmd="go test -race -count=1 ./..."
