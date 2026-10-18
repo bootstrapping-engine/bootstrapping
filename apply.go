@@ -122,21 +122,13 @@ type writer struct {
 }
 
 func (w *writer) write() error {
-	// Deletes first, children before the tables they reference; then
-	// everything else, referenced tables first.
 	tables := w.plan.tables
-	for i := len(tables) - 1; i >= 0; i-- {
-		tw := tables[i]
-		for _, rw := range tw.rows {
-			if rw.del {
-				if err := w.exec(rw, ActDelete, "DELETE FROM "+quoteIdent(tw.t.Name)+" WHERE "+w.whereKey(tw), rw.live.rawKey...); err != nil {
-					return fmt.Errorf("deleting %s %s: %w", tw.t.Name, keyText(rw.keyVals), err)
-				}
-				if err := w.log(tw, rw, ActDelete, "", nil, nil, describe(tw.t, rw.live.nat)); err != nil {
-					return err
-				}
-			}
-		}
+	// Deletes go first, so a new row can reuse a unique value an old one
+	// gave up, except rows a surviving row points at right now: those wait
+	// until that row has been pointed elsewhere (foreign keys may be on).
+	late := w.plan.pointedAt()
+	if err := w.deletes(late, false); err != nil {
+		return err
 	}
 	for _, tw := range tables {
 		// Renames first, so a new row can take a name an old one gave up;
@@ -150,6 +142,9 @@ func (w *writer) write() error {
 			}
 		}
 	}
+	if err := w.deletes(late, true); err != nil {
+		return err
+	}
 	for _, tw := range tables {
 		for _, rw := range tw.rows {
 			if err := w.writeLedger(tw, rw); err != nil {
@@ -157,10 +152,149 @@ func (w *writer) write() error {
 			}
 		}
 	}
+	for _, tw := range tables {
+		for _, c := range tw.t.Columns {
+			if c.Ref != nil {
+				if _, err := w.q.ExecContext(w.ctx, "INSERT INTO "+refsTable+" (tbl, col, ref) VALUES (?, ?, ?) ON CONFLICT (tbl, col) DO UPDATE SET ref = excluded.ref",
+					tw.t.Name, c.Name, c.Ref.String()); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	c := w.plan.Counts()
 	_, err := w.q.ExecContext(w.ctx, "INSERT INTO "+runsTable+" (id, at, seed_hash, version, inserts, updates, deletes, retires, kept, resolved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		w.run, w.at, w.plan.SeedHash, Version, c.Inserts, c.Updates+c.Renames+c.Unretires, c.Deletes, c.Retires, c.KeptEdits+c.KeptDeletes, c.Resolved)
 	return err
+}
+
+// deletes runs the plan's deletes, children before the tables they
+// reference: the ones in late, or the ones not in it.
+func (w *writer) deletes(late map[*rowWork]bool, wantLate bool) error {
+	tables := w.plan.tables
+	for i := len(tables) - 1; i >= 0; i-- {
+		tw := tables[i]
+		var dels []*rowWork
+		for _, rw := range tw.rows {
+			if rw.del && late[rw] == wantLate {
+				dels = append(dels, rw)
+			}
+		}
+		dels, err := w.selfOrder(tw, dels)
+		if err != nil {
+			return err
+		}
+		for _, rw := range dels {
+			if err := w.exec(rw, ActDelete, "DELETE FROM "+quoteIdent(tw.t.Name)+" WHERE "+w.whereKey(tw), rw.live.rawKey...); err != nil {
+				return fmt.Errorf("deleting %s %s: %w", tw.t.Name, keyText(rw.keyVals), err)
+			}
+			if err := w.log(tw, rw, ActDelete, "", nil, nil, describe(tw.t, rw.live.nat)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// selfOrder orders a table's deletes so a row that refers to another row of
+// the same table goes before it. Rows that refer to each other in a loop
+// have those references cleared first; they are all being deleted anyway.
+func (w *writer) selfOrder(tw *tableWork, dels []*rowWork) ([]*rowWork, error) {
+	var cols []string
+	for _, c := range tw.t.Columns {
+		if tw.selfRef(c.Name) && !tw.t.isKey(c.Name) {
+			cols = append(cols, c.Name)
+		}
+	}
+	if len(cols) == 0 || len(dels) < 2 {
+		return dels, nil
+	}
+	pointsAt := func(from, to *rowWork) bool {
+		for _, col := range cols {
+			v := from.live.nat[col]
+			if !v.IsNull() && v.Equal(to.live.nat[tw.refs[col].ref.Column]) {
+				return true
+			}
+		}
+		return false
+	}
+	var out []*rowWork
+	left := dels
+	for len(left) > 0 {
+		var next, rest []*rowWork
+		for _, rw := range left {
+			wanted := false
+			for _, other := range left {
+				if other != rw && pointsAt(other, rw) {
+					wanted = true
+					break
+				}
+			}
+			if wanted {
+				rest = append(rest, rw)
+			} else {
+				next = append(next, rw)
+			}
+		}
+		if len(next) == 0 {
+			// A loop: clear the references, then any order will do.
+			sets := make([]string, len(cols))
+			for i, col := range cols {
+				sets[i] = quoteIdent(col) + " = NULL"
+			}
+			for _, rw := range rest {
+				args := make([]any, len(rw.live.rawKey))
+				for i, v := range rw.live.rawKey {
+					args[i] = v.Any()
+				}
+				if _, err := w.q.ExecContext(w.ctx, "UPDATE "+quoteIdent(tw.t.Name)+" SET "+strings.Join(sets, ", ")+" WHERE "+w.whereKey(tw), args...); err != nil {
+					return nil, fmt.Errorf("deleting %s %s: %w", tw.t.Name, keyText(rw.keyVals), err)
+				}
+			}
+			return append(out, rest...), nil
+		}
+		out = append(out, next...)
+		left = rest
+	}
+	return out, nil
+}
+
+// pointedAt is the deleted rows that must wait until the end: those a row
+// that stays refers to before the apply, and, since they wait too, those a
+// waiting row refers to.
+func (p *Plan) pointedAt() map[*rowWork]bool {
+	out := map[*rowWork]bool{}
+	for grew := true; grew; {
+		grew = false
+		for _, target := range p.tables {
+			for _, rw := range target.rows {
+				if !rw.del || out[rw] {
+					continue
+				}
+				for _, from := range p.tables {
+					early := map[*liveRow]bool{} // rows gone before the writes
+					for _, r := range from.rows {
+						if r.del && r.live != nil && !out[r] && r != rw {
+							early[r.live] = true
+						}
+					}
+					for _, c := range from.t.Columns {
+						rm := from.refs[c.Name]
+						if rm == nil || rm.ref.Table != target.t.Name {
+							continue
+						}
+						want := rw.live.nat[rm.ref.Column]
+						for _, lr := range from.live {
+							if lr != rw.live && !early[lr] && lr.nat[c.Name].Equal(want) {
+								out[rw], grew = true, true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 func (w *writer) whereKey(tw *tableWork) string {
@@ -425,6 +559,10 @@ func (w *writer) log(tw *tableWork, rw *rowWork, act Action, col string, old, ne
 }
 
 func (w *writer) writeLedger(tw *tableWork, rw *rowWork) error {
+	if (rw.oldKey != "" || rw.base != nil && rw.base.moved) && rw.ledgerOp == ledgerNone && rw.base != nil {
+		// Only the key moved (a parent was renamed): carry the entry over.
+		rw.ledgerOp, rw.ledgerVals, rw.ledgerRet = ledgerUpsert, rw.base.vals, rw.base.retired
+	}
 	if rw.oldKey != "" {
 		if _, err := w.q.ExecContext(w.ctx, "DELETE FROM "+rowsTable+" WHERE tbl = ? AND key = ?", tw.t.Name, rw.oldKey); err != nil {
 			return err

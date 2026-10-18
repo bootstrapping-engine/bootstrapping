@@ -190,7 +190,7 @@ func (p *Plan) Writes() int {
 func (p *Plan) Pending() bool {
 	for _, t := range p.tables {
 		for _, r := range t.rows {
-			if r.ledgerOp != ledgerNone {
+			if r.ledgerOp != ledgerNone || r.oldKey != "" || (r.base != nil && r.base.moved) {
 				return true
 			}
 		}
@@ -270,15 +270,16 @@ type rowWork struct {
 }
 
 type tableWork struct {
-	t      *Table
-	info   *tableInfo
-	aff    map[string]Affinity // the affinity a column's natural value takes
-	refs   map[string]*refMap  // by column
-	rows   []*rowWork
-	byKey  map[string]*rowWork
-	live   map[string]*liveRow // every live row, managed or not
-	after  map[string]bool     // natural keys present after the apply, for references into this table
-	keyIdx map[string]int
+	t       *Table
+	info    *tableInfo
+	aff     map[string]Affinity // the affinity a column's natural value takes
+	refs    map[string]*refMap  // by column
+	rows    []*rowWork
+	byKey   map[string]*rowWork
+	live    map[string]*liveRow // every live row, managed or not
+	protect map[string]string   // rows not to delete: natural key -> the table still referring to them
+	after   map[string]bool     // natural keys present after the apply, for references into this table
+	keyIdx  map[string]int
 }
 
 // refMap translates a reference column between stored ids and the natural
@@ -312,13 +313,51 @@ func buildPlan(ctx context.Context, q querier, set *Set, opts *Options) (*Plan, 
 	if err != nil {
 		return nil, err
 	}
+	known, err := readKnownRefs(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	p, err := planOnce(ctx, q, set, opts, hasLedger, known, nil)
+	if err != nil {
+		return nil, err
+	}
+	// A delete must not take a row that something will still point at after
+	// the apply. If a pass deletes one, plan again with those rows kept, so
+	// the tables that refer to them see them too. A kept row can point at
+	// another row due for deletion, so repeat until nothing new is kept;
+	// each pass keeps more rows, so it ends.
+	protect := map[string]map[string]string{}
+	for {
+		grew := false
+		for tbl, keys := range p.stillReferred() {
+			if protect[tbl] == nil {
+				protect[tbl] = map[string]string{}
+			}
+			for k, from := range keys {
+				if _, ok := protect[tbl][k]; !ok {
+					protect[tbl][k] = from
+					grew = true
+				}
+			}
+		}
+		if !grew {
+			return p, nil
+		}
+		if p, err = planOnce(ctx, q, set, opts, hasLedger, known, protect); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func planOnce(ctx context.Context, q querier, set *Set, opts *Options, hasLedger bool, known map[string]map[string]*Ref, protect map[string]map[string]string) (*Plan, error) {
 	p := &Plan{SeedHash: set.Hash}
 	works := map[string]*tableWork{}
 	for _, t := range set.Tables {
-		tw, err := loadTable(ctx, q, t, hasLedger, works)
+		tw, err := loadTable(ctx, q, t, hasLedger, works, known)
 		if err != nil {
 			return nil, err
 		}
+		tw.protect = protect[t.Name]
 		works[t.Name] = tw
 		p.tables = append(p.tables, tw)
 		tw.plan(p, opts)
@@ -326,7 +365,124 @@ func buildPlan(ctx context.Context, q querier, set *Set, opts *Options) (*Plan, 
 	return p, nil
 }
 
-func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works map[string]*tableWork) (*tableWork, error) {
+// stillReferred finds the rows this plan deletes that a row present after
+// the apply still refers to: table -> natural key -> the referring table.
+func (p *Plan) stillReferred() map[string]map[string]string {
+	out := map[string]map[string]string{}
+	for _, target := range p.tables {
+		var dels []*rowWork
+		for _, rw := range target.rows {
+			if rw.del {
+				dels = append(dels, rw)
+			}
+		}
+		if len(dels) == 0 {
+			continue
+		}
+		for _, from := range p.tables {
+			for _, c := range from.t.Columns {
+				rm := from.refs[c.Name]
+				if rm == nil || rm.ref.Table != target.t.Name {
+					continue
+				}
+				wanted := from.referring(c.Name)
+				for _, rw := range dels {
+					v := rw.live.nat[rm.ref.Column]
+					if !v.IsNull() && wanted[encodeKey([]Value{v})] {
+						if out[target.t.Name] == nil {
+							out[target.t.Name] = map[string]string{}
+						}
+						out[target.t.Name][rw.key] = from.t.Name
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// referring is every natural value a column will refer to after the apply,
+// or wants to: rows that stay, rows inserted, and seed rows skipped for want
+// of the very row in question.
+func (tw *tableWork) referring(col string) map[string]bool {
+	out := map[string]bool{}
+	add := func(v Value) {
+		if !v.IsNull() && !strings.HasPrefix(v.S, missingPrefix) {
+			out[encodeKey([]Value{v})] = true
+		}
+	}
+	managed := map[*liveRow]*rowWork{}
+	for _, rw := range tw.rows {
+		if rw.live != nil {
+			managed[rw.live] = rw
+		}
+		if rw.seed != nil && !rw.del {
+			add(rw.seed[col])
+		}
+	}
+	for _, lr := range tw.live {
+		rw := managed[lr]
+		switch {
+		case rw != nil && rw.del:
+		case rw != nil && rw.sets != nil && hasKey(rw.sets, col):
+			add(rw.sets[col])
+		default:
+			add(lr.nat[col])
+		}
+	}
+	return out
+}
+
+func hasKey(m map[string]Value, k string) bool { _, ok := m[k]; return ok }
+
+// afterSet is every natural value a column holds once the apply is done:
+// live rows that stay, with their new values, and inserted rows.
+func (tw *tableWork) afterSet(col string) map[string]bool {
+	out := map[string]bool{}
+	managed := map[*liveRow]*rowWork{}
+	for _, rw := range tw.rows {
+		if rw.live != nil {
+			managed[rw.live] = rw
+		}
+		if rw.insert && !rw.skipped {
+			if v := rw.seed[col]; !v.IsNull() {
+				out[encodeKey([]Value{v})] = true
+			}
+		}
+	}
+	for _, lr := range tw.live {
+		rw := managed[lr]
+		if rw != nil && rw.del {
+			continue
+		}
+		v := lr.nat[col]
+		if rw != nil && hasKey(rw.sets, col) {
+			v = rw.sets[col]
+		}
+		if !v.IsNull() {
+			out[encodeKey([]Value{v})] = true
+		}
+	}
+	return out
+}
+
+// postValues maps a column's natural values as they are now to what they
+// become in this apply, for rows whose value changes: a rename, or an
+// update to that column.
+func (tw *tableWork) postValues(col string) map[string]Value {
+	out := map[string]Value{}
+	for _, rw := range tw.rows {
+		if rw.live == nil || rw.del {
+			continue
+		}
+		if v, ok := rw.sets[col]; ok {
+			out[encodeKey([]Value{rw.live.nat[col]})] = v
+		}
+	}
+	return out
+}
+
+func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works map[string]*tableWork, known map[string]map[string]*Ref) (*tableWork, error) {
 	info, err := readTableInfo(ctx, q, t.Name)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", t.File, err)
@@ -351,8 +507,12 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 		}
 	}
 	if t.RetireColumn != "" {
-		if _, ok := info.cols[t.RetireColumn]; !ok {
+		ci, ok := info.cols[t.RetireColumn]
+		if !ok {
 			return nil, fmt.Errorf("%s: table %q has no column %q to retire rows with", t.File, t.Name, t.RetireColumn)
+		}
+		if ci.notNull && !ci.hasDflt {
+			return nil, fmt.Errorf("%s: the retire column %q is NOT NULL with no default, so new rows couldn't be inserted; let it be NULL", t.File, t.RetireColumn)
 		}
 	}
 	for name, ci := range info.cols {
@@ -404,14 +564,20 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 			renames[key] = old
 		}
 	}
-
-	// A table referring to itself by its key can point at rows its own seed
-	// adds in this apply.
+	// A table referring to itself can point at rows its own seed adds. This
+	// is checked again once the table is planned (settleSelfRefs).
 	for _, c := range t.Columns {
-		if rm := tw.refs[c.Name]; rm != nil && rm.ref.Table == t.Name && len(t.Key) == 1 && t.Key[0] == rm.ref.Column {
+		if rm := tw.refs[c.Name]; rm != nil && rm.ref.Table == t.Name {
 			for _, key := range order {
-				rm.present[key] = true
+				if v := seedRows[key].seed[rm.ref.Column]; !v.IsNull() {
+					rm.present[encodeKey([]Value{v})] = true
+				}
 			}
+		}
+	}
+	for key, old := range renames {
+		if seedRows[encodeKey(old)] != nil {
+			return nil, fmt.Errorf("%s: %s is renamed from %s, which is still a row in the seed; rename one step per version", t.File, keyText(seedRows[key].keyVals), keyText(old))
 		}
 	}
 
@@ -421,6 +587,16 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 		if ledger, err = readLedger(ctx, q, t.Name); err != nil {
 			return nil, err
 		}
+	}
+	// The ledger remembers references by natural value. When the row a
+	// reference names gets a new name in this apply, the ledger's rows that
+	// name it follow, so they still match their live and seed rows.
+	for _, c := range t.Columns {
+		rm := tw.refs[c.Name]
+		if rm == nil || rm.ref.Table == t.Name || works[rm.ref.Table] == nil {
+			continue
+		}
+		ledger = translateLedger(ledger, t, c.Name, works[rm.ref.Table].postValues(rm.ref.Column))
 	}
 
 	// The live rows, with references turned into natural keys. Columns the
@@ -444,6 +620,16 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 	}
 	sort.Strings(extras)
 	cols = append(cols, extras...)
+	// A column the seed no longer names may have been a reference; the
+	// ledger holds its natural value, so read it the same way.
+	extraRefs := map[string]*refMap{}
+	for _, col := range extras {
+		if ref := known[t.Name][col]; ref != nil {
+			if rm, err := loadRef(ctx, q, ref, works); err == nil {
+				extraRefs[col] = rm
+			}
+		}
+	}
 	if t.RetireColumn != "" {
 		cols = append(cols, t.RetireColumn)
 	}
@@ -466,16 +652,27 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 			lr.nat[c.Name] = v
 		}
 		for i, col := range extras {
-			lr.nat[col] = r[len(t.Columns)+i]
+			v := r[len(t.Columns)+i]
+			if rm := extraRefs[col]; rm != nil && !v.IsNull() {
+				if n, ok := rm.toNat[encodeKey([]Value{v})]; ok {
+					v = n
+				}
+			}
+			lr.nat[col] = v
 		}
 		if t.RetireColumn != "" {
 			lr.retired = r[len(r)-1]
 		}
 		kv := make([]Value, len(t.Key))
 		lr.rawKey = make([]Value, len(t.Key))
+		nullKey := false
 		for i, k := range t.Key {
 			kv[i] = lr.nat[k]
 			lr.rawKey[i] = r[i]
+			nullKey = nullKey || kv[i].IsNull()
+		}
+		if nullKey {
+			continue // no seed row can name it, so it's never managed
 		}
 		key := encodeKey(kv)
 		if _, dup := live[key]; dup {
@@ -494,7 +691,7 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 			continue
 		}
 		oldKey := encodeKey(old)
-		if live[key] != nil || ledger[key] != nil || ledger[oldKey] == nil || seedRows[oldKey] != nil || consumed[oldKey] {
+		if live[key] != nil || ledger[key] != nil || ledger[oldKey] == nil || consumed[oldKey] {
 			continue // already renamed, or nothing to rename
 		}
 		consumed[oldKey] = true
@@ -521,6 +718,7 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 				lr.nat[c.Name] = n
 			}
 		}
+		ledger = translateLedger(ledger, t, c.Name, renamed)
 	}
 
 	add := func(rw *rowWork) {
@@ -531,6 +729,9 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 		rw := seedRows[key]
 		if rw.oldKey == "" {
 			rw.live, rw.base = live[key], ledger[key]
+			if rw.base != nil && rw.base.origKey != "" {
+				rw.oldKey = rw.base.origKey
+			}
 		}
 		add(rw)
 	}
@@ -542,9 +743,52 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 	}
 	sort.Strings(rest)
 	for _, key := range rest {
-		add(&rowWork{key: key, keyVals: ledger[key].keyVals, live: live[key], base: ledger[key]})
+		add(&rowWork{key: key, keyVals: ledger[key].keyVals, live: live[key], base: ledger[key], oldKey: ledger[key].origKey})
 	}
 	return tw, nil
+}
+
+// translateLedger rewrites a reference column's natural values in the
+// ledger, old -> new, re-keying rows whose key includes it.
+func translateLedger(ledger map[string]*ledgerRow, t *Table, col string, change map[string]Value) map[string]*ledgerRow {
+	if len(change) == 0 {
+		return ledger
+	}
+	out := make(map[string]*ledgerRow, len(ledger))
+	for key, lr := range ledger {
+		if v, ok := lr.vals[col]; ok {
+			if n, ok := change[encodeKey([]Value{v})]; ok {
+				vals := make(map[string]Value, len(lr.vals))
+				for k, x := range lr.vals {
+					vals[k] = x
+				}
+				vals[col] = n
+				cp := *lr
+				cp.vals, cp.moved = vals, true
+				if i := indexOf(t.Key, col); i >= 0 {
+					kv := append([]Value(nil), lr.keyVals...)
+					kv[i] = n
+					cp.keyVals = kv
+					cp.key = encodeKey(kv)
+					if cp.origKey == "" {
+						cp.origKey = key
+					}
+				}
+				lr = &cp
+			}
+		}
+		out[lr.key] = lr
+	}
+	return out
+}
+
+func indexOf(xs []string, x string) int {
+	for i, y := range xs {
+		if y == x {
+			return i
+		}
+	}
+	return -1
 }
 
 func loadRef(ctx context.Context, q querier, ref *Ref, works map[string]*tableWork) (*refMap, error) {
@@ -578,19 +822,14 @@ func loadRef(ctx context.Context, q querier, ref *Ref, works map[string]*tableWo
 			return nil, fmt.Errorf("reference %s: %d rows of %q have %s = %s, so it can't tell them apart", ref, n, ref.Table, ref.Column, keyText(v))
 		}
 	}
-	// A reference into a seed table by its key sees that table as it will be
-	// after this apply: rows it inserts count, rows it deletes don't, and a
-	// renamed row answers to its new name.
-	if tw := works[ref.Table]; tw != nil && len(tw.t.Key) == 1 && tw.t.Key[0] == ref.Column {
-		rm.present = tw.after
-		renamed := map[string]Value{}
-		for _, rw := range tw.rows {
-			if rw.renamedFrom != nil {
-				renamed[encodeKey(rw.renamedFrom.natKey(tw.t))] = rw.keyVals[0]
-			}
-		}
+	// A reference into a seed table sees that table as it will be after this
+	// apply: rows it inserts count, rows it deletes don't, and a row whose
+	// value changes (a rename, or an update) answers to the new value.
+	if tw := works[ref.Table]; tw != nil {
+		rm.present = tw.afterSet(ref.Column)
+		post := tw.postValues(ref.Column)
 		for id, nat := range rm.toNat {
-			if n, ok := renamed[encodeKey([]Value{nat})]; ok {
+			if n, ok := post[encodeKey([]Value{nat})]; ok {
 				rm.toNat[id] = n
 			}
 		}
@@ -631,8 +870,63 @@ func (tw *tableWork) plan(p *Plan, opts *Options) {
 			rw.ledgerOp = ledgerRemove
 		}
 	}
+	tw.settleSelfRefs(p)
 	tw.recordLines(p)
 	tw.computeAfter()
+}
+
+// settleSelfRefs checks a table's references to itself against the table
+// as the apply will leave it. An insert pointing at a row that won't exist
+// is skipped, which can strand another; so it repeats until nothing changes.
+func (tw *tableWork) settleSelfRefs(p *Plan) {
+	var cols []string
+	for _, c := range tw.t.Columns {
+		if tw.selfRef(c.Name) {
+			cols = append(cols, c.Name)
+		}
+	}
+	if len(cols) == 0 {
+		return
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, col := range cols {
+			target := tw.refs[col].ref.Column
+			after := tw.afterSet(target)
+			ok := func(v Value) bool { return v.IsNull() || after[encodeKey([]Value{v})] }
+			for _, rw := range tw.rows {
+				switch {
+				case rw.insert && !rw.skipped && !ok(rw.seed[col]):
+					rw.insert, rw.skipped, rw.ledgerOp = false, true, ledgerNone
+					for _, i := range rw.changes {
+						if p.Changes[i].Action == ActInsert {
+							p.Changes[i] = Change{Table: tw.t.Name, Key: rw.keyVals, key: rw.key, Action: ActSkip, Column: col,
+								Reason: fmt.Sprintf("%s refers to %s %s, which doesn't exist", col, tw.refs[col].ref, Display(rw.seed[col]))}
+						}
+					}
+					changed = true
+				case hasKey(rw.sets, col) && !ok(rw.sets[col]):
+					v := rw.sets[col]
+					delete(rw.sets, col)
+					if rw.ledgerOp == ledgerUpsert {
+						vals := map[string]Value{}
+						for k, x := range rw.ledgerVals {
+							vals[k] = x
+						}
+						tw.keepBase(rw, col, vals)
+						rw.upsertLedger(vals, rw.ledgerRet) // may now match the ledger
+					}
+					for _, i := range rw.changes {
+						if c := p.Changes[i]; c.Column == col && (c.Action == ActUpdate || c.Action == ActConflict) {
+							p.Changes[i] = Change{Table: tw.t.Name, Key: rw.keyVals, key: rw.key, Action: ActSkip, Column: col,
+								Reason: fmt.Sprintf("%s refers to %s %s, which doesn't exist", col, tw.refs[col].ref, Display(v))}
+						}
+					}
+					changed = true
+				}
+			}
+		}
+	}
 }
 
 func (tw *tableWork) planRename(p *Plan, rw *rowWork) {
@@ -809,6 +1103,11 @@ func (tw *tableWork) planRemoved(p *Plan, opts *Options, rw *rowWork) {
 		}
 		rw.upsertLedger(rw.base.vals, true)
 	case RemoveDelete:
+		if from, ok := tw.protect[rw.key]; ok {
+			tw.change(p, rw, Change{Action: ActSkip, Reason: "dropped from the seed, but rows of " + from + " still refer to it; it is deleted once they don't"})
+			rw.skipped = true
+			return
+		}
 		// Edited means a merge column differs from what was last applied,
 		// including columns the seed stopped naming when it dropped the row.
 		var edited []string
@@ -916,7 +1215,7 @@ func (rw *rowWork) field(c *Column, b, s, l *Value, verdict string) {
 
 func (rw *rowWork) upsertLedger(vals map[string]Value, retired bool) {
 	rw.ledgerOp, rw.ledgerVals, rw.ledgerRet = ledgerUpsert, vals, retired
-	if rw.base != nil && rw.oldKey == "" && rw.base.retired == retired && encodeVals(rw.base.vals) == encodeVals(vals) {
+	if rw.base != nil && rw.oldKey == "" && !rw.base.moved && rw.base.retired == retired && encodeVals(rw.base.vals) == encodeVals(vals) {
 		rw.ledgerOp = ledgerNone // the ledger already says this
 	}
 }
@@ -925,12 +1224,22 @@ func (rw *rowWork) upsertLedger(vals map[string]Value, retired bool) {
 // catching up, so a plan never hides a write.
 func (tw *tableWork) recordLines(p *Plan) {
 	for _, rw := range tw.rows {
-		if rw.ledgerOp != ledgerNone && len(rw.changes) == 0 && rw.live != nil && rw.seed != nil {
-			reason := "already matches the seed"
-			if rw.base != nil {
-				reason = "matches the seed's new values"
-			}
-			tw.change(p, rw, Change{Action: ActRecord, Reason: reason})
+		if rw.ledgerOp == ledgerNone && rw.oldKey == "" && (rw.base == nil || !rw.base.moved) || len(rw.changes) > 0 {
+			continue
 		}
+		var reason string
+		switch {
+		case rw.seed != nil && rw.live != nil && rw.base == nil:
+			reason = "already matches the seed"
+		case rw.seed != nil && rw.live != nil:
+			reason = "matches the seed's new values"
+		case rw.seed == nil && rw.live == nil:
+			reason = "gone from the seed and the table; the ledger forgets it"
+		case rw.seed == nil:
+			reason = "dropped from the seed, and already retired"
+		default:
+			reason = "the ledger catches up"
+		}
+		tw.change(p, rw, Change{Action: ActRecord, Reason: reason})
 	}
 }

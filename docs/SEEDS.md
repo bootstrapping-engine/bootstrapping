@@ -72,6 +72,10 @@ If the ledger knows `author` and the table has no `editor` yet, the apply
 renames the row in place. Once applied, the hint does nothing and can stay
 or go.
 
+One rename per row per apply: a seed that renames `author` to `editor` and
+`editor` to `chief` at once is refused before anything is written, since
+the two can't be told apart from a swap. Apply them one at a time.
+
 ## columns: who owns a value
 
 | Ownership | Meaning |
@@ -92,12 +96,20 @@ role_id = "roles.code"
 The seed writes `role_id = "editor"`; the table stores the id of the
 `roles` row whose `code` is `editor`. The referenced table needs a single
 primary key column or a rowid, and the column named must tell its rows
-apart. References into another seed table see that table as the apply will
-leave it, so a link to a role added in the same apply works, and a table
-can refer to itself (a role's parent role).
+apart; it doesn't have to be the key. References into another seed table
+see that table as the apply will leave it, whichever column they name: a
+link to a role added in the same apply works, a link by a value the same
+apply changes finds the new value, and a table can refer to itself (a
+role's parent role).
 
 A row whose reference names a row that doesn't exist is skipped, not
-guessed at, and tried again on the next apply.
+guessed at, and tried again on the next apply. A reference declared under
+`[refs]` that no row sets is still managed: it is NULL in the seed.
+
+A row due for deletion that something will still point at after the apply
+is skipped instead, and deleted on a later apply once nothing does. That
+covers rows the seed keeps, rows an admin added, and other rows kept for
+the same reason (a kept role keeps its parent role).
 
 ## on_remove: rows dropped from the seed
 

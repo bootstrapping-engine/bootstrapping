@@ -74,7 +74,6 @@ func TestParseTableErrors(t *testing.T) {
 		{`table = "t"` + "\nkey = \"a\"\n[columns]\nb = { owner = \"seed\" }", `unknown setting "owner"`},
 		{`table = "t"` + "\nkey = \"a\"\n[columns]\nb = { on_conflict = \"x\" }", `on_conflict must be`},
 		{`table = "t"` + "\nkey = \"a\"\n[refs]\nb = \"roles\"", `must be "table.column"`},
-		{`table = "t"` + "\nkey = \"a\"\n[refs]\nb = \"roles.code\"", `names a column no row sets`},
 		{`table = "t"` + "\nkey = \"a\"\n[[row]]\nb = 1", `no value for key column "a"`},
 		{`table = "t"` + "\nkey = \"a\"\n[[row]]\na = 1\n_why = 2", `reserved`},
 		{`table = "t"` + "\nkey = \"a\"\n[[row]]\na = 1\nb = [1, 2]", `lists and tables`},

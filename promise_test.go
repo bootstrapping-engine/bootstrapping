@@ -174,14 +174,50 @@ func runHistory(t *testing.T, seed int64, st *promiseStats) {
 
 		before := readItems(t, db)
 		beforeDump := dump(t, db)
+		pre, err := bs.Preview(ctx, db, set, opts)
+		if err != nil {
+			t.Fatalf("history %d v%d: preview: %v", seed, v, err)
+		}
 		plan, err := bs.Apply(ctx, db, set, opts)
 		st.Applies++
+		if err != nil && !errors.Is(err, bs.ErrBlocked) {
+			t.Fatalf("history %d v%d: preview said %q, apply failed: %v", seed, v, actions(pre), err)
+		}
+		if actions(pre) != actions(plan) || pre.Blocked() != plan.Blocked() {
+			t.Fatalf("history %d v%d: preview and apply differ:\npreview %s\n  apply %s", seed, v, actions(pre), actions(plan))
+		}
+		checkPending(t, plan)
+		// Every conflict, blocking or settled, must be a real one by the
+		// rules: a merge value changed on both sides, differently; a row
+		// already there with a different value; or a dropped row edited.
+		for _, ch := range plan.Changes {
+			if ch.Action != bs.ActConflict {
+				continue
+			}
+			c := ch.KeyText()
+			s, inSeed := seedRows[c]
+			b, inBase := base[c]
+			l, wasLive := before[c]
+			real := false
+			switch {
+			case ch.Column == "" && !inSeed && inBase && wasLive && removeMode == "delete":
+				real = !same(l.get("a"), b["a"]) || !same(l.get("b"), b["b"])
+			case (ch.Column == "a" || ch.Column == "b") && inSeed && wasLive && !inBase:
+				real = !same(l.get(ch.Column), s[ch.Column])
+			case (ch.Column == "a" || ch.Column == "b") && inSeed && wasLive && inBase:
+				sv, bv, lv := s[ch.Column], b[ch.Column], l.get(ch.Column)
+				real = !same(sv, bv) && !same(lv, bv) && !same(lv, sv)
+			}
+			if !real {
+				t.Fatalf("history %d v%d, row %s: a conflict on %q that the rules don't call for\nbase %v\nseed %v\nbefore %v",
+					seed, v, c, ch.Column, show(base[c]), show(seedRows[c]), showRow(before[c]))
+			}
+		}
 		if errors.Is(err, bs.ErrBlocked) {
 			st.Blocked++
 			if after := dump(t, db); after != beforeDump {
 				t.Fatalf("history %d v%d: a blocked apply wrote to the database", seed, v)
 			}
-			// Every blocking conflict must be a real one by this test's rules.
 			for _, ch := range plan.Changes {
 				if ch.Blocking() {
 					st.Conflicts++
@@ -335,6 +371,7 @@ func runHistory(t *testing.T, seed int64, st *promiseStats) {
 
 		// The apply settled everything: a second one finds nothing to write.
 		again, err := bs.Apply(ctx, db, set, opts)
+		checkPending(t, again)
 		if err != nil || again.Applied || again.Pending() {
 			t.Fatalf("history %d v%d: a second apply wasn't empty: applied=%v err=%v %v", seed, v, again.Applied, err, again.Changes)
 		}
@@ -370,6 +407,24 @@ func runHistory(t *testing.T, seed int64, st *promiseStats) {
 			}
 		}
 		base = next
+	}
+}
+
+// checkPending checks a plan says it would write exactly when one of its
+// lines is a write: data, or the ledger recording or forgetting a row.
+func checkPending(t *testing.T, p *bs.Plan) {
+	t.Helper()
+	shows := false
+	for _, c := range p.Changes {
+		switch c.Action {
+		case bs.ActInsert, bs.ActUpdate, bs.ActDelete, bs.ActRetire, bs.ActUnretire, bs.ActRename, bs.ActRecord, bs.ActRelease:
+			shows = true
+		case bs.ActConflict:
+			shows = shows || c.Resolved != ""
+		}
+	}
+	if !p.Applied && p.Pending() != shows && !p.Blocked() {
+		t.Fatalf("Pending() is %v, but the plan's lines say %v: %s", p.Pending(), shows, actions(p))
 	}
 }
 

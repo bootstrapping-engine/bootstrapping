@@ -12,16 +12,18 @@ import (
 	"strings"
 )
 
-// The ledger: two tables in the application's own database, written in the
+// The ledger: four tables in the application's own database, written in the
 // same transaction as the data they describe.
 //
 //	_bootstrapping_rows     the last-applied seed values of every managed row
 //	_bootstrapping_runs     one row per apply
 //	_bootstrapping_changes  what each apply wrote, for history and explain
+//	_bootstrapping_refs     which columns have been references, and to what
 const (
 	rowsTable    = "_bootstrapping_rows"
 	runsTable    = "_bootstrapping_runs"
 	changesTable = "_bootstrapping_changes"
+	refsTable    = "_bootstrapping_refs"
 )
 
 var ledgerSchema = []string{
@@ -56,6 +58,12 @@ var ledgerSchema = []string{
 		new    TEXT,
 		note   TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (run, seq)
+	)`,
+	`CREATE TABLE IF NOT EXISTS ` + refsTable + ` (
+		tbl TEXT NOT NULL,
+		col TEXT NOT NULL,
+		ref TEXT NOT NULL,
+		PRIMARY KEY (tbl, col)
 	)`,
 }
 
@@ -173,6 +181,8 @@ func createLedger(ctx context.Context, q querier) error {
 // last applied.
 type ledgerRow struct {
 	key     string
+	origKey string // the key as stored, when a parent's rename changed it
+	moved   bool   // a reference in it was translated, so it must be written again
 	keyVals []Value
 	vals    map[string]Value
 	retired bool
@@ -200,6 +210,42 @@ func readLedger(ctx context.Context, q querier, table string) (map[string]*ledge
 			return nil, fmt.Errorf("ledger row %s/%s: %w", table, key, err)
 		}
 		out[key] = &ledgerRow{key: key, keyVals: kv, vals: vm, retired: retired != 0}
+	}
+	return out, rows.Err()
+}
+
+// readKnownRefs is every column that has been a reference, by table, so a
+// column the seed stops naming is still read as one.
+func readKnownRefs(ctx context.Context, q querier) (map[string]map[string]*Ref, error) {
+	out := map[string]map[string]*Ref{}
+	rows, err := q.QueryContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?", refsTable)
+	if err != nil {
+		return nil, err
+	}
+	var n int
+	if rows.Next() {
+		rows.Scan(&n)
+	}
+	rows.Close()
+	if n == 0 {
+		return out, nil
+	}
+	rows, err = q.QueryContext(ctx, "SELECT tbl, col, ref FROM "+refsTable)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var tbl, col, ref string
+		if err := rows.Scan(&tbl, &col, &ref); err != nil {
+			return nil, err
+		}
+		if t, c, ok := strings.Cut(ref, "."); ok {
+			if out[tbl] == nil {
+				out[tbl] = map[string]*Ref{}
+			}
+			out[tbl][col] = &Ref{Table: t, Column: c}
+		}
 	}
 	return out, rows.Err()
 }

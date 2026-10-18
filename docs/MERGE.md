@@ -23,7 +23,11 @@ Three things are compared for every row, by its natural key:
 | no | yes | no | never managed: not touched |
 
 A dropped row with `on_remove = "delete"` is a conflict instead of a delete
-when any merge column differs from B. Retiring never needs to ask, since it
+when any merge column differs from B, including columns B managed that S
+no longer names. It is skipped instead of deleted while any row will still
+refer to it after the apply (a row that stays, an admin's row, or another
+row skipped for the same reason), and deleted on a later apply once none
+does. Retiring never needs to ask, since it
 destroys nothing. A row already retired is not touched again until it comes
 back into the seed, when its retire column goes back to NULL.
 
@@ -63,7 +67,14 @@ conflict.
 
 In one transaction, holding SQLite's write lock from the start:
 
-1. Deletes, in reverse dependency order (links before what they link to).
+1. Deletes, in reverse dependency order (links before what they link to),
+   except rows something still points at before the apply.
 2. For each table in dependency order: renames, inserts, other updates and
    retires, then any references from the table to itself.
-3. The ledger, the change log and the run record.
+3. The deletes held back in step 1, now that nothing points at them: a row
+   held back holds back the rows it points at too. Within a table, a row
+   goes before the rows it points at; rows that point at each other in a
+   loop have those references set to NULL first.
+4. The ledger, the change log and the run record.
+
+So with foreign keys on, no statement in an apply breaks one.

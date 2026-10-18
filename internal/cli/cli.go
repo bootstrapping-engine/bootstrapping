@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	bs "github.com/bootstrapping-engine/bootstrapping"
@@ -88,10 +89,30 @@ func Main(name string, args []string, stdout, stderr io.Writer) int {
 		return err
 	})
 	fs.Usage = func() { fmt.Fprintf(stderr, usage, name) }
-	if err := fs.Parse(rest); err != nil {
-		return ExitError
+	if wantsJSON(rest) {
+		// Errors go out as JSON like every other answer, not as usage text.
+		fs.SetOutput(io.Discard)
+		fs.Usage = func() {}
 	}
-	c.args = fs.Args()
+	// Flags may come before or after the other arguments.
+	for {
+		if err := fs.Parse(rest); err != nil {
+			if wantsJSON(rest) {
+				json.NewEncoder(stdout).Encode(map[string]string{"error": err.Error()})
+			}
+			return ExitError
+		}
+		rest = fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		if rest[0] == "--" {
+			c.args = append(c.args, rest[1:]...)
+			break
+		}
+		c.args = append(c.args, rest[0])
+		rest = rest[1:]
+	}
 	switch cmd {
 	case "plan", "status", "apply", "explain", "history", "init":
 	default:
@@ -150,7 +171,27 @@ func (c *command) open() (*sql.DB, error) {
 	if _, err := os.Stat(c.dbPath); err != nil {
 		return nil, fmt.Errorf("no database at %s", c.dbPath)
 	}
-	return sql.Open("sqlite3", "file:"+c.dbPath+"?_busy_timeout=30000")
+	return sql.Open("sqlite3", dsn(c.dbPath))
+}
+
+// dsn makes a file path into a SQLite URI, escaping the characters a URI
+// gives a meaning to, so a file named "a?b#1%" opens as itself.
+func dsn(path string) string {
+	path = filepath.ToSlash(path)
+	path = strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23").Replace(path)
+	return "file:" + path + "?_busy_timeout=30000"
+}
+
+func wantsJSON(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "-json", "--json", "-json=true", "--json=true":
+			return true
+		case "--":
+			return false
+		}
+	}
+	return false
 }
 
 func (c *command) run(ctx context.Context) (int, error) {

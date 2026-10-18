@@ -6,6 +6,8 @@
 bootstrapping <command> [flags]      (or: bst <command> [flags])
 ```
 
+Flags can go before or after a command's other arguments; `--` ends them.
+
 | Command | Does | Exit codes |
 |---|---|---|
 | `plan [-v]` | lists what an apply would do; `-v` also lists rows that only need recording | 0 in step, 2 pending, 3 blocked, 1 error |
@@ -20,9 +22,9 @@ Flags for every command:
 
 | Flag | Meaning |
 |---|---|
-| `-db FILE` | the SQLite database, or `$BOOTSTRAPPING_DB`; it must exist |
+| `-db FILE` | the SQLite database, or `$BOOTSTRAPPING_DB`; it must exist. Any file name works, `?` and `#` included |
 | `-seeds DIR` | the seed directory, or `$BOOTSTRAPPING_SEEDS`, or `seeds` |
-| `-json` | JSON instead of text; errors as `{"error": "..."}` |
+| `-json` | JSON instead of text; errors, flag errors included, as `{"error": "..."}` |
 
 `-take` settles conflicts for one apply, and can be repeated. The first that
 matches a conflict wins:
@@ -37,7 +39,10 @@ matches a conflict wins:
 ```
 
 KEY in `explain` and `-take` is the natural key as the plan prints it, with
-a comma between the parts of a composite key.
+a comma between the parts of a composite key. In `-take`, a key that has a
+`/` in it needs the column as well (`-take 'pages/docs/intro/title=seed'`
+reads as table `pages`, key `docs/intro`, column `title`); without one, the
+last part would be taken for a column.
 
 ### Plan lines
 
@@ -59,7 +64,7 @@ a comma between the parts of a composite key.
 
 ```json
 {
-  "pending": true, "blocked": false, "applied": false, "run": 0,
+  "pending": true, "blocked": false, "applied": false,
   "seed_hash": "...", "summary": "Pending: 2 inserts, 2 updates.",
   "counts": {"inserts": 2, "updates": 2, "conflicts": 0, "resolved": 0, "...": 0},
   "changes": [
@@ -70,7 +75,8 @@ a comma between the parts of a composite key.
 }
 ```
 
-Values carry their SQLite type: `null`, `integer`, `real`, `text` or `blob`
+After an apply, `"applied": true` and `"run"` gives the run's number in the
+ledger. Values carry their SQLite type: `null`, `integer`, `real`, `text` or `blob`
 (blobs as base64).
 
 ## The Go package
@@ -116,13 +122,14 @@ seconds for another writer and restores the setting afterwards.
 
 ## The ledger
 
-Three tables in the application's database, created on the first apply:
+Four tables in the application's database, created on the first apply:
 
 | Table | Holds |
 |---|---|
 | `_bootstrapping_rows` | per managed row: table, natural key, the values last applied, retired or not, and the run that wrote it |
 | `_bootstrapping_runs` | per apply: when, the seed set's hash, the version, and counts |
 | `_bootstrapping_changes` | per write: run, table, key, action, column, old and new value |
+| `_bootstrapping_refs` | per reference column: the `[refs]` entry last applied, so a column the seed stops naming is still read by natural key |
 
 Values are kept losslessly as `n` (NULL), `i:42`, `r:1.5`, `t:text` or
 `b:base64`. The ledger is written in the same transaction as the data, so

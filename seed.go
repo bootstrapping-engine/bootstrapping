@@ -420,6 +420,11 @@ func ParseTable(name string, data []byte) (*Table, error) {
 			rest = append(rest, c)
 		}
 	}
+	for c := range refs { // a declared reference no row sets is managed, as NULL
+		if !cols[c] && declared[c] == nil && !t.isKey(c) {
+			rest = append(rest, c)
+		}
+	}
 	sort.Strings(rest)
 	for _, name := range rest {
 		c := declared[name]
@@ -428,11 +433,6 @@ func ParseTable(name string, data []byte) (*Table, error) {
 		}
 		c.Ref = refs[name]
 		t.Columns = append(t.Columns, c)
-	}
-	for col := range refs {
-		if t.Column(col) == nil {
-			return nil, fail("ref %q names a column no row sets and [columns] doesn't list", col)
-		}
 	}
 	if t.RetireColumn != "" && t.Column(t.RetireColumn) != nil {
 		return nil, fail("%q is the retire column and can't also be a managed column", t.RetireColumn)

@@ -219,3 +219,46 @@ func TestParseTake(t *testing.T) {
 		}
 	}
 }
+
+func TestOddDatabaseName(t *testing.T) {
+	// A file name with the characters a SQLite URI gives a meaning to.
+	path := filepath.Join(t.TempDir(), "my app?v=1#2%41.db")
+	db, err := sql.Open("sqlite3", dsn(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, _ := os.ReadFile(example + "schema.sql")
+	if _, err := db.Exec(string(schema)); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the schema went somewhere else: %v", err)
+	}
+	if code, out, errs := run(t, "apply", "-db", path, "-seeds", example+"seeds/v1"); code != ExitOK || !strings.Contains(out, "insert") {
+		t.Fatalf("apply: %d %s %s", code, out, errs)
+	}
+	entries, _ := os.ReadDir(filepath.Dir(path))
+	if len(entries) != 1 {
+		t.Fatalf("expected only the one database file, found %d entries", len(entries))
+	}
+}
+
+func TestFlagsAfterArguments(t *testing.T) {
+	db := setup(t)
+	if code, _, errs := run(t, "apply", "-db", db, "-seeds", example+"seeds/v1"); code != ExitOK {
+		t.Fatalf("apply: %s", errs)
+	}
+	code, out, errs := run(t, "explain", "roles", "editor", "-db", db, "-seeds", example+"seeds/v1", "-json")
+	if code != ExitOK || !json.Valid([]byte(out)) {
+		t.Fatalf("explain with flags last: %d %q %s", code, out, errs)
+	}
+}
+
+func TestFlagErrorsAsJSON(t *testing.T) {
+	code, out, errs := run(t, "plan", "-json", "-take", "maybe")
+	var got map[string]string
+	if code != ExitError || json.Unmarshal([]byte(out), &got) != nil || !strings.Contains(got["error"], "maybe") || errs != "" {
+		t.Fatalf("got %d %q %q", code, out, errs)
+	}
+}

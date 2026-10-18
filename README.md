@@ -240,8 +240,11 @@ Every number here comes from [test/results](test/results), recorded by
   types, 129,632 checks that the engine's conversion matches what SQLite
   stores.
 
-The suite also tests that it can fail: making the merge overwrite local
-edits, or let conflicts through, or delete edited rows, each turns it red.
+A test like the first is only worth something if it can fail. During
+development it was run against three deliberately broken versions of the
+merge: one that overwrites local edits, one that lets conflicts through as
+updates, one that deletes edited rows. Each failed within its first few
+histories.
 
 ## Limits in version 0.1
 
