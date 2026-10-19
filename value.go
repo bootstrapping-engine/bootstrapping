@@ -200,6 +200,11 @@ func affinityOf(declared string) Affinity {
 func fromSeed(x any, aff Affinity) (Value, error) {
 	var v Value
 	switch t := x.(type) {
+	case csvText:
+		if b, ok := t.boolean(); ok && (aff == AffNumeric || aff == AffInteger || aff == AffReal) {
+			return fromSeed(b, aff)
+		}
+		v = TextValue(string(t))
 	case string:
 		v = TextValue(t)
 	case int64:

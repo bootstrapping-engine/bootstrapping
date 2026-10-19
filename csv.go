@@ -109,16 +109,31 @@ func readCSVRows(spec any, read func(string) ([]byte, error)) ([]map[string]any,
 		for i, cell := range rec {
 			if header[i] == "_renamed_from" {
 				if cell != "" && cell != null {
-					row["_renamed_from"] = cell
+					row["_renamed_from"] = csvText(cell)
 				}
 				continue
 			}
 			if cell != null {
-				row[header[i]] = cell
+				row[header[i]] = csvText(cell)
 			}
 		}
 		rows = append(rows, row)
 		wheres = append(wheres, fmt.Sprintf("%s: line %d", clean, line))
 	}
 	return rows, wheres, nil
+}
+
+// csvText is a value from a CSV cell. It's text, as a TOML string is, except
+// that true and false in a numeric column are 1 and 0, as TOML's true and
+// false are, so moving rows between TOML and CSV changes nothing.
+type csvText string
+
+func (c csvText) boolean() (bool, bool) {
+	switch strings.ToLower(string(c)) {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	}
+	return false, false
 }

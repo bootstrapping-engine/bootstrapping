@@ -110,8 +110,9 @@ FR,France,,EUR
 The first line names the columns. Every cell is text, and the column's
 declared type stores it the way the database would: `84000000` in an
 INTEGER column is the number 84000000, the same value a TOML `84000000`
-gives, so moving rows between TOML and CSV changes nothing. An empty cell
-is NULL. Quoted cells may hold commas, quotes (doubled) and line breaks.
+gives, so moving rows between TOML and CSV changes nothing; `true` and
+`false` in a numeric column are 1 and 0, as in TOML. An empty cell is
+NULL. Quoted cells may hold commas, quotes (doubled) and line breaks.
 The file must be UTF-8; a byte order mark at the start is fine.
 
 A `_renamed_from` column gives a row's old key, for tables with a single

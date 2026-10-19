@@ -78,6 +78,8 @@ type colInfo struct {
 	pk       int
 	notNull  bool
 	hasDflt  bool
+	always   bool   // PostgreSQL: GENERATED ALWAYS (identity or computed), so nothing else may write it
+	seq      string // PostgreSQL: the sequence of an identity or serial column
 }
 
 type tableInfo struct {
@@ -142,16 +144,29 @@ func readTableInfo(ctx context.Context, q *dbConn, table string) (*tableInfo, er
 }
 
 func readTableInfoPG(ctx context.Context, q *dbConn, table string) (*tableInfo, error) {
+	// The base type is found under any number of domains; the sequence is
+	// an identity or serial column's, which inserts with explicit values
+	// have to move on.
 	rows, err := q.QueryContext(ctx, `SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull,
 			a.atthasdef OR a.attidentity <> '' OR a.attgenerated <> '',
+			a.attidentity = 'a' OR a.attgenerated <> '',
+			coalesce(pg_get_serial_sequence(quote_ident(?), a.attname), ''),
 			CASE WHEN EXISTS (SELECT 1 FROM pg_catalog.pg_index i
 				WHERE i.indrelid = a.attrelid AND i.indisprimary AND a.attnum = ANY (i.indkey)) THEN 1 ELSE 0 END,
 			bt.typname, bt.typcategory
 		FROM pg_catalog.pg_attribute a
-		JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
-		JOIN pg_catalog.pg_type bt ON bt.oid = CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE t.oid END
+		JOIN LATERAL (
+			WITH RECURSIVE chain (oid, typtype, typbasetype, depth) AS (
+				SELECT t.oid, t.typtype, t.typbasetype, 0 FROM pg_catalog.pg_type t WHERE t.oid = a.atttypid
+				UNION ALL
+				SELECT t.oid, t.typtype, t.typbasetype, chain.depth + 1 FROM pg_catalog.pg_type t
+				JOIN chain ON t.oid = chain.typbasetype WHERE chain.typtype = 'd' AND chain.depth < 50
+			)
+			SELECT oid FROM chain WHERE typtype <> 'd' LIMIT 1
+		) base ON true
+		JOIN pg_catalog.pg_type bt ON bt.oid = base.oid
 		WHERE a.attrelid = to_regclass(quote_ident(?)) AND a.attnum > 0 AND NOT a.attisdropped
-		ORDER BY a.attnum`, table)
+		ORDER BY a.attnum`, table, table)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +176,7 @@ func readTableInfoPG(ctx context.Context, q *dbConn, table string) (*tableInfo, 
 	for rows.Next() {
 		var c colInfo
 		var typname, category string
-		if err := rows.Scan(&c.name, &c.declared, &c.notNull, &c.hasDflt, &c.pk, &typname, &category); err != nil {
+		if err := rows.Scan(&c.name, &c.declared, &c.notNull, &c.hasDflt, &c.always, &c.seq, &c.pk, &typname, &category); err != nil {
 			return nil, err
 		}
 		c.kind = pgKind(typname)
@@ -187,7 +202,7 @@ func readTableInfoPG(ctx context.Context, q *dbConn, table string) (*tableInfo, 
 
 func ledgerExists(ctx context.Context, q *dbConn) (bool, error) {
 	for _, t := range []string{rowsTable, runsTable, changesTable} {
-		if ok, err := q.tableExists(ctx, t); err != nil || !ok {
+		if ok, err := q.ledgerTableExists(ctx, t); err != nil || !ok {
 			return false, err
 		}
 	}
@@ -206,7 +221,16 @@ func Init(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	return createLedger(ctx, q)
+	// With the apply lock, so it can't race an apply creating them too.
+	end, err := q.begin(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer end(false)
+	if err := createLedger(ctx, q); err != nil {
+		return err
+	}
+	return end(true)
 }
 
 func createLedger(ctx context.Context, q *dbConn) error {
@@ -259,7 +283,7 @@ func readLedger(ctx context.Context, q *dbConn, table string) (map[string]*ledge
 // column the seed stops naming is still read as one.
 func readKnownRefs(ctx context.Context, q *dbConn) (map[string]map[string]*Ref, error) {
 	out := map[string]map[string]*Ref{}
-	if ok, err := q.tableExists(ctx, refsTable); err != nil || !ok {
+	if ok, err := q.ledgerTableExists(ctx, refsTable); err != nil || !ok {
 		return out, err
 	}
 	rows, err := q.QueryContext(ctx, "SELECT tbl, col, ref FROM "+refsTable)
@@ -469,12 +493,12 @@ func readChangeLog(ctx context.Context, q *dbConn, table, key string) ([]LoggedC
 		}
 		if old.Valid {
 			if v, err := decodeValue(old.String); err == nil {
-				l.Old = v.String()
+				l.Old = Display(v)
 			}
 		}
 		if nw.Valid {
 			if v, err := decodeValue(nw.String); err == nil {
-				l.New = v.String()
+				l.New = Display(v)
 			}
 		}
 		out = append(out, l)

@@ -498,7 +498,7 @@ func firstDuplicate(xs []string) string {
 
 func checkScalar(v any) error {
 	switch v.(type) {
-	case string, int64, float64, bool, time.Time:
+	case string, csvText, int64, float64, bool, time.Time:
 		return nil
 	case []any, map[string]any, []map[string]any:
 		return errors.New("lists and tables can't be stored in a column; use a string")

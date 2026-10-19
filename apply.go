@@ -139,6 +139,9 @@ func (w *writer) write() error {
 	if err := w.deletes(late, true); err != nil {
 		return err
 	}
+	if err := w.moveSequences(); err != nil {
+		return err
+	}
 	for _, tw := range tables {
 		for _, rw := range tw.rows {
 			if err := w.writeLedger(tw, rw); err != nil {
@@ -184,6 +187,38 @@ func (w *writer) deletes(late map[*rowWork]bool, wantLate bool) error {
 			}
 			if err := w.log(tw, rw, ActDelete, "", nil, nil, describe(tw.t, rw.live.nat)); err != nil {
 				return err
+			}
+		}
+	}
+	return nil
+}
+
+// moveSequences, on PostgreSQL, moves an identity or serial column's
+// sequence past the values the seed wrote into it, so the application's own
+// next insert doesn't draw a number a seed row already has.
+func (w *writer) moveSequences() error {
+	if !w.q.pg {
+		return nil
+	}
+	for _, tw := range w.plan.tables {
+		for _, c := range tw.t.Columns {
+			ci := tw.info.cols[c.Name]
+			if ci.seq == "" || ci.kind != Integer {
+				continue
+			}
+			wrote := false
+			for _, rw := range tw.rows {
+				if rw.insert && !rw.skipped && !rw.seed[c.Name].IsNull() || hasKey(rw.sets, c.Name) {
+					wrote = true
+				}
+			}
+			if !wrote {
+				continue
+			}
+			q := "SELECT setval(CAST(? AS regclass), m) FROM (SELECT max(" + quoteIdent(c.Name) + ") AS m FROM " + quoteIdent(tw.t.Name) + ") x " +
+				"WHERE m IS NOT NULL AND m > coalesce(pg_sequence_last_value(CAST(? AS regclass)), 0)"
+			if _, err := w.q.ExecContext(w.ctx, q, ci.seq, ci.seq); err != nil {
+				return fmt.Errorf("moving the sequence of %s.%s: %w", tw.t.Name, c.Name, err)
 			}
 		}
 	}

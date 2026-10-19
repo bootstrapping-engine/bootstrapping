@@ -396,3 +396,14 @@ func TestCommandPostgres(t *testing.T) {
 		t.Fatalf("status: %d %s", code, out)
 	}
 }
+
+// A key from the seed can't break out of the Markdown hint.
+func TestMarkdownHintEscaped(t *testing.T) {
+	p := &bs.Plan{Changes: []bs.Change{{Table: "t", Key: []bs.Value{bs.TextValue("a`\n> <b>x</b>")}, Action: bs.ActConflict, Conflict: bs.BothChanged, Column: "c"}}}
+	var b bytes.Buffer
+	RenderMarkdown(&b, p, false)
+	out := b.String()
+	if !strings.Contains(out, "such as `` -take 't/a` > <b>x</b>/c=local' ``.") {
+		t.Fatalf("%s", out)
+	}
+}

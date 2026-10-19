@@ -204,6 +204,22 @@ are passed to the server as settings for the connection.
   again sees the edit and merges it as usual.
 - **Preview** and `plan` run in a read-only REPEATABLE READ transaction and
   take no lock.
+- **Values that don't fit** stop the plan with the row and column named,
+  text too long for a `varchar(n)` or `char(n)` column included: a seed
+  value is never stored cut short. `numeric(p,s)` rounds as PostgreSQL
+  rounds it.
+- **Identity and serial columns**: when the seed sets ids in one, the apply
+  moves its sequence past them, so the application's next insert gets a
+  fresh number. A `GENERATED ALWAYS` column (identity or computed) can't be
+  set by the seed; the plan says so.
+- **Retire columns** must be able to hold the time of the apply: text, date
+  or timestamp.
+- **Keys** should be types whose equality is their text: text, integers,
+  uuid, dates. A key of `citext`, or a plain `numeric` written both `1.5`
+  and `1.50`, compares differently in the plan than in the table.
+- **Connection poolers**: the apply's lock and its transaction must stay on
+  one server connection. Behind PgBouncer in transaction mode, connect the
+  command or the library directly to the server, or use session mode.
 
 ## The ledger
 

@@ -155,3 +155,16 @@ func TestCSVKeyRepeatedSaysWhere(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// true and false in a CSV cell are TOML's true and false in a numeric
+// column, so moving rows from TOML to CSV changes nothing.
+func TestCSVBooleans(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		f := fixtureOn(t, b, `CREATE TABLE r (code TEXT PRIMARY KEY, active INTEGER, label TEXT)`)
+		f.agree(map[string]string{"r.toml": "table = \"r\"\nkey = \"code\"\n[[row]]\ncode = \"a\"\nactive = true\nlabel = \"true\"\n[[row]]\ncode = \"b\"\nactive = false\n"})
+		expect(t, f.agree(map[string]string{
+			"r.toml": "table = \"r\"\nkey = \"code\"\nrows = \"r.csv\"\n",
+			"r.csv":  "code,active,label\na,TRUE,true\nb,false,\n",
+		}), "")
+	})
+}

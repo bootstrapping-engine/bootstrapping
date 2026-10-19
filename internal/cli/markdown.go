@@ -48,7 +48,7 @@ func RenderMarkdown(w io.Writer, p *bs.Plan, verbose bool) {
 		} else {
 			fmt.Fprintf(&b, "> %d conflicts block the apply. Nothing is written until they are settled,\n", len(blocking))
 		}
-		fmt.Fprintf(&b, "> with `on_conflict` in the seed file or `-take` on the command, such as `-take %s`.\n", strings.Trim(exampleTake(p), "'"))
+		fmt.Fprintf(&b, "> with `on_conflict` in the seed file or `-take` on the command, such as %s.\n", mdCode("-take "+exampleTake(p)))
 	}
 	if len(shown) == 0 {
 		fmt.Fprint(w, b.String())

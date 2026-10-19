@@ -97,8 +97,9 @@ func Display(v Value) string {
 }
 
 // missingPrefix marks a reference whose row doesn't exist, so it compares
-// unequal to every real value.
-const missingPrefix = "\x00missing:"
+// unequal to every real value. U+FFFF is a noncharacter, never in real text,
+// and unlike a NUL byte PostgreSQL can store it, in the change log.
+const missingPrefix = "\uffffmissing:"
 
 // Counts sums a plan by kind.
 type Counts struct {
@@ -551,6 +552,9 @@ func loadTable(ctx context.Context, q *dbConn, t *Table, hasLedger bool, works m
 			return nil, fmt.Errorf("%s: table %q has no column %q", t.File, t.Name, c.Name)
 		}
 		tw.ci[c.Name] = ci
+		if ci.always {
+			return nil, fmt.Errorf("%s: column %q of %q is GENERATED ALWAYS, so only the database writes it; leave it out of the seed", t.File, c.Name, t.Name)
+		}
 		if c.Ref != nil {
 			rm, err := loadRef(ctx, q, c.Ref, works)
 			if err != nil {
@@ -568,9 +572,17 @@ func loadTable(ctx context.Context, q *dbConn, t *Table, hasLedger bool, works m
 		if ci.notNull && !ci.hasDflt {
 			return nil, fmt.Errorf("%s: the retire column %q is NOT NULL with no default, so new rows couldn't be inserted; let it be NULL", t.File, t.RetireColumn)
 		}
+		if q.pg {
+			// Retiring writes the time of the apply; the column has to take it.
+			if _, err := q.pgCast(ctx, ci, []string{"2026-01-02T03:04:05Z"}); err != nil {
+				return nil, fmt.Errorf("%s: the retire column %q is %s, which can't hold the time a row was retired; use a text, date or timestamp column", t.File, t.RetireColumn, ci.declared)
+			}
+		}
 	}
 	for name, ci := range info.cols {
-		if ci.notNull && !ci.hasDflt && ci.pk == 0 && t.Column(name) == nil && name != t.RetireColumn {
+		// SQLite fills an INTEGER PRIMARY KEY itself, NOT NULL or not.
+		rowidAlias := !q.pg && ci.pk > 0 && info.idCol == name && strings.EqualFold(strings.TrimSpace(ci.declared), "INTEGER")
+		if ci.notNull && !ci.hasDflt && !rowidAlias && t.Column(name) == nil && name != t.RetireColumn {
 			return nil, fmt.Errorf("%s: column %q of %q is NOT NULL with no default, so the seed must set it", t.File, name, t.Name)
 		}
 	}
@@ -682,7 +694,11 @@ func loadTable(ctx context.Context, q *dbConn, t *Table, hasLedger bool, works m
 	extraRefs := map[string]*refMap{}
 	for _, col := range extras {
 		if ref := known[t.Name][col]; ref != nil {
-			if rm, err := loadRef(ctx, q, ref, works); err == nil {
+			var rm *refMap
+			// Best effort: if the referenced table is gone, the column is
+			// read as it is. On PostgreSQL the attempt mustn't spoil the
+			// transaction.
+			if err := q.try(ctx, func() (err error) { rm, err = loadRef(ctx, q, ref, works); return err }); err == nil {
 				extraRefs[col] = rm
 			}
 		}

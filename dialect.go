@@ -38,16 +38,18 @@ type dbConn struct {
 // transaction: on PostgreSQL a failed statement spoils the transaction it
 // runs in.
 func newDBConn(ctx context.Context, q querier) (*dbConn, error) {
+	// PostgreSQL is asked first: a failed probe is logged by the server,
+	// while SQLite just returns the error.
 	var v string
-	if err := q.QueryRowContext(ctx, "SELECT sqlite_version()").Scan(&v); err == nil {
-		return &dbConn{q: q}, nil
-	}
 	if err := q.QueryRowContext(ctx, "SELECT current_setting('server_version_num')").Scan(&v); err == nil {
 		n, _ := strconv.Atoi(v)
 		if n < 120000 {
 			return nil, fmt.Errorf("PostgreSQL %d.%d is too old; Bootstrapping needs 12 or later", n/10000, n%10000/100)
 		}
 		return &dbConn{q: q, pg: true}, nil
+	}
+	if err := q.QueryRowContext(ctx, "SELECT sqlite_version()").Scan(&v); err == nil {
+		return &dbConn{q: q}, nil
 	}
 	return nil, errors.New("the database is neither SQLite nor PostgreSQL, the two Bootstrapping supports")
 }
@@ -163,12 +165,14 @@ func (d *dbConn) begin(ctx context.Context, write bool) (end func(commit bool) e
 
 	var unlock func()
 	if write {
-		const lock = "SELECT pg_advisory_lock(hashtext('bootstrapping:' || current_schema()))"
+		// Two keys: one for Bootstrapping, one for the schema, so the lock
+		// can't collide with an application's own one-key advisory locks.
+		const lock = "SELECT pg_advisory_lock(hashtext('bootstrapping'), hashtext(current_schema()))"
 		if _, err := d.q.ExecContext(ctx, lock); err != nil {
 			return nil, fmt.Errorf("waiting for another apply: %w", err)
 		}
 		unlock = func() {
-			d.q.ExecContext(bg, "SELECT pg_advisory_unlock(hashtext('bootstrapping:' || current_schema()))")
+			d.q.ExecContext(bg, "SELECT pg_advisory_unlock(hashtext('bootstrapping'), hashtext(current_schema()))")
 		}
 	}
 	stmt := "BEGIN ISOLATION LEVEL REPEATABLE READ"
@@ -189,6 +193,7 @@ func (d *dbConn) begin(ctx context.Context, write bool) (end func(commit bool) e
 		"SET LOCAL IntervalStyle = 'postgres'",
 		"SET LOCAL bytea_output = 'hex'",
 		"SET LOCAL extra_float_digits = 1",
+		"SET LOCAL lc_monetary = 'C'",
 	} {
 		if _, err := d.q.ExecContext(ctx, s); err != nil {
 			d.q.ExecContext(bg, "ROLLBACK")
@@ -224,13 +229,15 @@ func (d *dbConn) finisher(bg context.Context, after func()) func(bool) error {
 	}
 }
 
-// tableExists reports whether a table of that name is visible, unqualified,
-// to the queries Bootstrapping runs.
-func (d *dbConn) tableExists(ctx context.Context, name string) (bool, error) {
+// ledgerTableExists reports whether a ledger table exists where Apply
+// writes it: on PostgreSQL, in the first schema of the search path, which
+// is where CREATE TABLE puts it and where unqualified names find it first.
+// A ledger further down the path belongs to another setup and is ignored.
+func (d *dbConn) ledgerTableExists(ctx context.Context, name string) (bool, error) {
 	var n int
 	var err error
 	if d.pg {
-		err = d.QueryRowContext(ctx, "SELECT count(*) FROM pg_catalog.pg_class WHERE oid = to_regclass(quote_ident(?)) AND relkind IN ('r', 'p')", name).Scan(&n)
+		err = d.QueryRowContext(ctx, "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname = current_schema() AND tablename = ?", name).Scan(&n)
 	} else {
 		err = d.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?", name).Scan(&n)
 	}
@@ -316,6 +323,11 @@ func pgSeedText(x any, c colInfo) (string, error) {
 		return strconv.FormatInt(t, 10), nil
 	case float64:
 		return pgFloat(t), nil
+	case csvText:
+		if b, ok := t.boolean(); ok && c.category == 'N' {
+			return pgSeedText(b, c)
+		}
+		return string(t), nil
 	case bool:
 		if c.category == 'N' {
 			if t {
@@ -332,62 +344,85 @@ func pgSeedText(x any, c colInfo) (string, error) {
 
 // pgCast casts seed texts to a column's type on the server, all in one
 // statement, and returns each one's value as stored. If one doesn't fit the
-// type, the error says which.
+// type, the error says which. An explicit cast cuts a string or bit string
+// down to the column's length without a word, where storing it would fail,
+// so a value that loses anything that way is reported too: a seed value is
+// never stored shortened.
 func (d *dbConn) pgCast(ctx context.Context, c colInfo, texts []string) (map[string]Value, error) {
 	out := make(map[string]Value, len(texts))
 	if len(texts) == 0 {
 		return out, nil
 	}
-	b, _ := json.Marshal(texts)
-	q := "SELECT v, CAST(CAST(v AS " + c.declared + ") AS text) FROM json_array_elements_text(CAST(? AS json)) AS v"
+	cast := "CAST(CAST(v AS " + c.declared + ") AS text)"
+	cut := "false"
+	switch c.category {
+	case 'S': // strings: a cut that drops more than trailing spaces
+		cut = "rtrim(v, ' ') <> rtrim(" + cast + ", ' ')"
+	case 'V': // bit strings: cut or padded
+		cut = cast + " <> CAST(CAST(v AS bit varying) AS text)"
+	}
 	// A failed statement spoils a PostgreSQL transaction, so each attempt
 	// runs in a savepoint it can be rolled back to.
-	try := func(f func() error) error {
-		if _, err := d.ExecContext(ctx, "SAVEPOINT bootstrapping_cast"); err != nil {
-			return err
-		}
-		if err := f(); err != nil {
-			d.ExecContext(ctx, "ROLLBACK TO SAVEPOINT bootstrapping_cast")
-			d.ExecContext(ctx, "RELEASE SAVEPOINT bootstrapping_cast")
-			return err
-		}
-		_, err := d.ExecContext(ctx, "RELEASE SAVEPOINT bootstrapping_cast")
-		return err
-	}
-	err := try(func() error {
-		rows, err := d.QueryContext(ctx, q, string(b))
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var in string
-			var s sql.NullString
-			if err := rows.Scan(&in, &s); err != nil {
-				return err
-			}
-			v, err := pgValue(s, c.kind)
+	var bad string
+	run := func(list []string) error {
+		b, _ := json.Marshal(list)
+		return d.try(ctx, func() error {
+			rows, err := d.QueryContext(ctx, "SELECT v, "+cast+", "+cut+" FROM json_array_elements_text(CAST(? AS json)) AS v", string(b))
 			if err != nil {
 				return err
 			}
-			out[in] = v
-		}
-		return rows.Err()
-	})
+			defer rows.Close()
+			for rows.Next() {
+				var in string
+				var s sql.NullString
+				var lost bool
+				if err := rows.Scan(&in, &s, &lost); err != nil {
+					return err
+				}
+				if lost && bad == "" {
+					bad = in
+				}
+				v, err := pgValue(s, c.kind)
+				if err != nil {
+					return err
+				}
+				out[in] = v
+			}
+			return rows.Err()
+		})
+	}
+	err := run(texts)
+	if bad != "" {
+		return nil, &castError{text: bad, err: fmt.Errorf("too long for %s", c.declared)}
+	}
 	if err == nil {
 		return out, nil
 	}
 	// Find the value at fault, for a message that names it.
 	for _, t := range texts {
-		e := try(func() error {
-			var s sql.NullString
-			return d.QueryRowContext(ctx, "SELECT CAST(CAST(CAST(? AS text) AS "+c.declared+") AS text)", t).Scan(&s)
-		})
-		if e != nil {
+		if e := run([]string{t}); e != nil {
 			return nil, &castError{text: t, err: e}
 		}
 	}
 	return nil, err
+}
+
+// try runs f in a savepoint on PostgreSQL, so that if it fails the
+// transaction goes on as if it hadn't run.
+func (d *dbConn) try(ctx context.Context, f func() error) error {
+	if !d.pg {
+		return f()
+	}
+	if _, err := d.ExecContext(ctx, "SAVEPOINT bootstrapping_try"); err != nil {
+		return err
+	}
+	if err := f(); err != nil {
+		d.ExecContext(ctx, "ROLLBACK TO SAVEPOINT bootstrapping_try")
+		d.ExecContext(ctx, "RELEASE SAVEPOINT bootstrapping_try")
+		return err
+	}
+	_, err := d.ExecContext(ctx, "RELEASE SAVEPOINT bootstrapping_try")
+	return err
 }
 
 type castError struct {
