@@ -16,10 +16,11 @@
 //	plan, err := bootstrapping.Preview(ctx, db, set, nil)
 //	plan, err = bootstrapping.Apply(ctx, db, set, nil)
 //
-// The package works with any database/sql driver for SQLite. It needs the
+// The package works with any database/sql driver for SQLite or PostgreSQL
+// (12 or later) and tells the two apart on its own. It needs the
 // application's tables to exist already; schema migrations are another
 // tool's job.
 package bootstrapping
 
 // Version is the release, raised before a release goes out.
-const Version = "0.1.0"
+const Version = "0.2.0"
