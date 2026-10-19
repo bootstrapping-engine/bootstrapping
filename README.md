@@ -2,7 +2,7 @@
 
 Bootstrapping keeps the reference data an application ships with (roles,
 permissions, plan tiers, workflow states, country lists) in step with its
-SQLite database, without undoing what admins changed.
+SQLite or PostgreSQL database, without undoing what admins changed.
 
 Loading that data once is easy. Updating it later is where it hurts. Your
 app ships v2 of its roles, but a customer's admin renamed one of them last
@@ -118,6 +118,8 @@ permission_id = "posts.publish"
 ```
 
 A renamed row keeps its id and its links with `_renamed_from = "author"`.
+Long lists, such as countries or currencies, can keep their rows in a CSV
+file instead: `rows = "countries.csv"` in the table's TOML file.
 [docs/SEEDS.md](docs/SEEDS.md) has every setting.
 
 Bootstrapping fills tables; it doesn't create them. Your migrations do that,
@@ -133,8 +135,16 @@ bst explain -db app.db -seeds seeds roles editor
 bst history -db app.db
 ```
 
+`-db` is a SQLite file or a PostgreSQL URL:
+
+```sh
+bst apply -db 'postgres://app@db.internal/app?sslmode=require&search_path=app' -seeds seeds
+```
+
 `-db` and `-seeds` can come from `BOOTSTRAPPING_DB` and
-`BOOTSTRAPPING_SEEDS`. Every command takes `-json`.
+`BOOTSTRAPPING_SEEDS`. Every command takes `-json`, and `plan` takes
+`-markdown` for a pull request comment that shows what a seed change will
+do ([docs/REFERENCE.md](docs/REFERENCE.md) has a GitHub Actions example).
 
 Exit codes for `plan` and `status`: 0 in step, 2 an apply would write
 something, 3 a conflict blocks it, 1 an error. `apply` exits 0 when done
@@ -184,8 +194,9 @@ History:
 
 ## The Go library
 
-The library works with any `database/sql` driver for SQLite and doesn't
-import one. Ship the seeds inside your binary and apply them at startup:
+The library works with any `database/sql` driver for SQLite or PostgreSQL
+and doesn't import one; it tells the two apart on its own. Ship the seeds
+inside your binary and apply them at startup:
 
 ```go
 import "github.com/bootstrapping-engine/bootstrapping"
@@ -205,16 +216,22 @@ the applies. [docs/REFERENCE.md](docs/REFERENCE.md) has the whole API.
 
 ## How it works
 
-Each apply opens one connection and takes SQLite's write lock with
-`BEGIN IMMEDIATE`, plans again inside the transaction, writes the data and
-the ledger, and commits. A crash leaves the database as it was or as the
-apply leaves it. Two applies at once take turns: the second waits for the
-lock and finds nothing to do.
+Each apply opens one connection, takes a lock, plans again inside the
+transaction, writes the data and the ledger, and commits. On SQLite the
+lock is the write lock (`BEGIN IMMEDIATE`); on PostgreSQL it's an advisory
+lock, and the transaction is REPEATABLE READ. A crash leaves the database as
+it was or as the apply leaves it. Two applies at once take turns: the second
+waits for the lock and finds nothing to do. On PostgreSQL an admin can keep
+working during an apply; if they edit a row the apply then tries to write,
+the apply fails with nothing written, and the next one sees the edit.
 
-Values are compared the way SQLite stores them. A seed's `1` in a TEXT
-column is the text `"1"`, as SQLite would have stored it, so it doesn't
-look like a change. [docs/MERGE.md](docs/MERGE.md) is the full set of rules,
-row by row and value by value.
+Values are compared the way the database stores them. On SQLite a seed's
+`1` in a TEXT column is the text `"1"`, as SQLite would have stored it. On
+PostgreSQL every seed value is cast to its column's type by the server, so
+`7` in a `numeric(10,2)` column is `7.00` and a jsonb document matches
+however its keys were ordered. Neither looks like a change.
+[docs/MERGE.md](docs/MERGE.md) is the full set of rules, row by row and
+value by value.
 
 ## How it was tested
 
@@ -255,9 +272,11 @@ merge: one that overwrites local edits, one that lets conflicts through as
 updates, one that deletes edited rows. Each failed within its first few
 histories.
 
-## Limits in version 0.1
+## Limits in version 0.2
 
-- SQLite only. PostgreSQL is the plan for the next version.
+- SQLite and PostgreSQL (12 or later). On PostgreSQL, tables are found
+  through the connection's `search_path`; a table a reference points at
+  needs a one-column primary key.
 - A reference names a row by one column; composite references aren't
   supported.
 - Seeds are for reference data: thousands of rows, not millions. Every

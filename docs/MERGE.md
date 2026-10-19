@@ -46,7 +46,12 @@ L and B (b is NULL for a column B didn't manage):
 | `merge` | l = b | update to s |
 | `merge` | otherwise | conflict |
 
-Equal means equal as SQLite stores it: same storage class, same value.
+Equal means equal as the database stores it. On SQLite that's the same
+storage class and the same value. On PostgreSQL it's the same text as the
+server prints the stored value, under fixed settings (UTC, ISO dates), so
+`7.00` and `7.000` in a `numeric(10,2)` column are equal, and `1.5` and
+`1.50` in a plain `numeric` column are not, since PostgreSQL keeps the
+scale.
 
 ## After an apply
 
@@ -65,7 +70,8 @@ conflict.
 
 ## Order of writes
 
-In one transaction, holding SQLite's write lock from the start:
+In one transaction, holding the apply lock from the start (SQLite's write
+lock; on PostgreSQL an advisory lock, in a REPEATABLE READ transaction):
 
 1. Deletes, in reverse dependency order (links before what they link to),
    except rows something still points at before the apply.

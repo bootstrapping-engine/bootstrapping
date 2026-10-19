@@ -52,9 +52,15 @@ them as a string if you need to.
 A column a row leaves out is NULL for that row. The managed columns are the
 key, every column any row sets, and every column under `[columns]`.
 
-Values are converted the way SQLite would store them in that column, using
-its type affinity: `1` in a TEXT column is the text `"1"`; `"42"` in an
-INTEGER column is the integer 42.
+Values are converted the way the database would store them in that column.
+On SQLite that's the column's type affinity: `1` in a TEXT column is the
+text `"1"`; `"42"` in an INTEGER column is the integer 42. On PostgreSQL the
+server casts each value to the column's type: `7` in a `numeric(10,2)`
+column is `7.00`, `"2026-10-18 09:30+03"` in a `timestamptz` column is that
+moment, and `"{1,2}"` fills an `integer[]`. A boolean in a numeric column is
+1 or 0 on both. TOML has no arrays or documents for a column, so write
+arrays, json and other structured values as strings in the database's own
+syntax.
 
 A table with a NOT NULL column that has no default must have it managed by
 the seed; otherwise inserts would fail, so the plan stops early and says so.

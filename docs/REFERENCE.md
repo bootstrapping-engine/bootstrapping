@@ -22,7 +22,7 @@ Flags for every command:
 
 | Flag | Meaning |
 |---|---|
-| `-db FILE` | the SQLite database, or `$BOOTSTRAPPING_DB`; it must exist. Any file name works, `?` and `#` included |
+| `-db DB` | a SQLite file, or a PostgreSQL URL (`postgres://` or `postgresql://`); or `$BOOTSTRAPPING_DB`. The file or database must exist. Any file name works, `?` and `#` included |
 | `-seeds DIR` | the seed directory, or `$BOOTSTRAPPING_SEEDS`, or `seeds` |
 | `-json` | JSON instead of text; errors, flag errors included, as `{"error": "..."}` |
 | `-markdown` | `plan`, `status` and `apply` print the plan as GitHub-flavored Markdown, for a pull request comment; not with `-json` |
@@ -124,7 +124,7 @@ hence the `|| true`; drop it to fail the check on a conflict.
 ```
 
 After an apply, `"applied": true` and `"run"` gives the run's number in the
-ledger. Values carry their SQLite type: `null`, `integer`, `real`, `text` or `blob`
+ledger. Values carry their type, as the plan compared them: `null`, `integer`, `real`, `text` or `blob`
 (blobs as base64).
 
 ## The Go package
@@ -144,7 +144,9 @@ import "github.com/bootstrapping-engine/bootstrapping"
 | `History(ctx, db, n) ([]Run, error)` | the last n applies, newest first |
 | `Init(ctx, db) error` | creates the ledger tables |
 
-`db` is a `*sql.DB` from any SQLite driver. The package doesn't import one.
+`db` is a `*sql.DB` from any SQLite or PostgreSQL driver; the package tells
+which it is talking to and doesn't import a driver. The commands use
+mattn/go-sqlite3 and lib/pq.
 
 ```go
 type Options struct {
@@ -164,13 +166,49 @@ A `Plan` has `Changes`, and `Counts()`, `Blocked()`, `Pending()` and
 `Column` for value-level changes, the `Base`, `Seed` and `Live` values, and
 for conflicts the `Conflict` kind and how it was `Resolved`.
 
-Apply holds one connection for the whole transaction and starts it with
-`BEGIN IMMEDIATE`. If the connection's busy timeout is 0, it waits up to 30
-seconds for another writer and restores the setting afterwards.
+Apply holds one connection for the whole transaction. On SQLite it starts
+it with `BEGIN IMMEDIATE`; if the connection's busy timeout is 0, it waits
+up to 30 seconds for another writer and restores the setting afterwards.
+
+## PostgreSQL
+
+PostgreSQL 12 or later. Give the command a URL:
+
+```sh
+bst plan -db 'postgres://app:secret@db.internal:5432/app?sslmode=require' -seeds seeds
+```
+
+Any parameter lib/pq takes goes in the URL; others, such as `search_path`,
+are passed to the server as settings for the connection.
+
+- **Tables** are named without a schema and found through the connection's
+  `search_path` (`&search_path=app` in the URL). The ledger tables are
+  created in the first schema of the path. Each schema has its own ledger
+  and its own lock.
+- **References**: the table a reference points at needs a one-column
+  primary key; PostgreSQL has no rowid to fall back on. Identity and serial
+  primary keys are the usual case and need nothing in the seed.
+- **Values** are compared as the server prints them, under fixed settings
+  (UTC, ISO dates, hex bytea), whatever the role's or the database's own
+  settings. Seed values are cast to the column's type by the server,
+  `numeric(10,2)`, enums, domains, arrays, json and jsonb included, so a
+  value written differently but stored the same isn't a change. A value
+  that doesn't fit its column stops the plan with the row and column named.
+  Integer, floating-point and bytea values show as numbers and blobs in
+  plans and the ledger; every other type shows as text.
+- **Locking**: an apply takes a session advisory lock (one per schema), then
+  plans and writes in a single REPEATABLE READ transaction. A second apply
+  waits for the lock and finds nothing to do. Admins can keep working: if
+  one edits a row after the apply planned and before it wrote that row, the
+  apply fails with a serialization error and writes nothing. Applying
+  again sees the edit and merges it as usual.
+- **Preview** and `plan` run in a read-only REPEATABLE READ transaction and
+  take no lock.
 
 ## The ledger
 
-Four tables in the application's database, created on the first apply:
+Four tables in the application's database (on PostgreSQL, in the first
+schema of the search path), created on the first apply:
 
 | Table | Holds |
 |---|---|
