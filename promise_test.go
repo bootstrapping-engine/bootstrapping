@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -72,13 +71,17 @@ type promiseStats struct {
 }
 
 func TestPromise(t *testing.T) {
+	eachBackend(t, testPromise)
+}
+
+func testPromise(t *testing.T, b backend) {
 	histories := 120 * scale()
 	if testing.Short() {
 		histories = 20
 	}
 	var st promiseStats
 	for h := 0; h < histories; h++ {
-		runHistory(t, int64(h), &st)
+		runHistory(t, b, int64(h), &st)
 	}
 	st.Histories = histories
 	t.Logf("%+v", st)
@@ -86,22 +89,22 @@ func TestPromise(t *testing.T) {
 		st.LocalDeletes == 0 || st.Retired == 0 || st.Deleted == 0 || st.Blocked == 0 {
 		t.Fatalf("the histories didn't reach every case: %+v", st)
 	}
-	record(t, "promise", st)
+	record(t, resultName("promise", b), st)
 }
 
 type nullable = *string
 
 func str(s string) nullable { return &s }
 
-func runHistory(t *testing.T, seed int64, st *promiseStats) {
+func runHistory(t *testing.T, b backend, seed int64, st *promiseStats) {
 	ctx := context.Background()
 	rng := rand.New(rand.NewSource(seed))
-	db := openPath(t, filepath.Join(t.TempDir(), "p.db"))
+	db := b.open(t)
 	defer db.Close()
-	mustExec(t, db, "PRAGMA synchronous = OFF")
-	if _, err := db.Exec(promiseSchema); err != nil {
-		t.Fatal(err)
+	if !b.pg {
+		mustExec(t, db, "PRAGMA synchronous = OFF")
 	}
+	mustExec(t, db, b.ddl(promiseSchema))
 	onRemove := []string{`"keep"`, `"delete"`, `{ retire = "retired_at" }`}[rng.Intn(3)]
 	removeMode := map[string]string{`"keep"`: "keep", `"delete"`: "delete", `{ retire = "retired_at" }`: "retire"}[onRemove]
 
@@ -464,7 +467,7 @@ func (r itemRow) get(col string) nullable {
 
 func mustExec(t *testing.T, db *sql.DB, q string, args ...any) {
 	t.Helper()
-	if _, err := db.Exec(q, args...); err != nil {
+	if _, err := db.Exec(rebind(db, q), args...); err != nil {
 		t.Fatalf("%s: %v", q, err)
 	}
 }

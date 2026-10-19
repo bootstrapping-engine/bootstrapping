@@ -32,7 +32,7 @@ func openDB(t *testing.T) *sql.DB {
 
 func dbExec(t *testing.T, db *sql.DB, q string, args ...any) {
 	t.Helper()
-	if _, err := db.Exec(q, args...); err != nil {
+	if _, err := db.Exec(rebind(db, q), args...); err != nil {
 		t.Fatalf("%s: %v", q, err)
 	}
 }
@@ -60,7 +60,7 @@ var fixed = &bs.Options{Now: func() time.Time { return time.Date(2026, 11, 2, 8,
 func query1(t *testing.T, db *sql.DB, q string, args ...any) string {
 	t.Helper()
 	var s sql.NullString
-	if err := db.QueryRow(q, args...).Scan(&s); err != nil {
+	if err := db.QueryRow(rebind(db, q), args...).Scan(&s); err != nil {
 		t.Fatalf("%s: %v", q, err)
 	}
 	if !s.Valid {
@@ -95,9 +95,19 @@ func checkPlan(t *testing.T, p *bs.Plan, wants []want) {
 }
 
 func TestStory(t *testing.T) {
-	ctx := context.Background()
-	db := openDB(t)
-	loadSchema(t, db, "examples/permissions/schema.sql")
+	eachBackend(t, func(t *testing.T, b backend) {
+		ctx := context.Background()
+		db := b.open(t)
+		schema, err := os.ReadFile("examples/permissions/schema.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dbExec(t, db, b.ddl(string(schema)))
+		story(t, ctx, db)
+	})
+}
+
+func story(t *testing.T, ctx context.Context, db *sql.DB) {
 	v1 := loadSeeds(t, "examples/permissions/seeds/v1")
 	v2 := loadSeeds(t, "examples/permissions/seeds/v2")
 	v3 := loadSeeds(t, "examples/permissions/seeds/v3")

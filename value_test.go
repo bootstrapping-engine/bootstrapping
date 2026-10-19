@@ -68,7 +68,7 @@ func TestAffinityMatchesSQLite(t *testing.T) {
 	for i, ty := range types {
 		aff := affinityOf(ty)
 		for _, x := range values {
-			want, err := canonical(context.Background(), db, x, aff)
+			want, err := canonical(context.Background(), &dbConn{q: db}, x, aff)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -67,18 +67,14 @@ var ledgerSchema = []string{
 	)`,
 }
 
-// querier is what both *sql.DB and *sql.Conn offer.
-type querier interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-}
-
 func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
 type colInfo struct {
 	name     string
-	declared string
+	declared string // the declared type; on PostgreSQL the full type, as format_type prints it
 	aff      Affinity
+	kind     Kind // PostgreSQL: the Value kind of the column's values
+	category byte // PostgreSQL: the type's category, such as 'N' for numeric types
 	pk       int
 	notNull  bool
 	hasDflt  bool
@@ -91,7 +87,10 @@ type tableInfo struct {
 	noRowid bool
 }
 
-func readTableInfo(ctx context.Context, q querier, table string) (*tableInfo, error) {
+func readTableInfo(ctx context.Context, q *dbConn, table string) (*tableInfo, error) {
+	if q.pg {
+		return readTableInfoPG(ctx, q, table)
+	}
 	rows, err := q.QueryContext(ctx, "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?)", table)
 	if err != nil {
 		return nil, err
@@ -142,19 +141,57 @@ func readTableInfo(ctx context.Context, q querier, table string) (*tableInfo, er
 	return ti, nil
 }
 
-func ledgerExists(ctx context.Context, q querier) (bool, error) {
-	rows, err := q.QueryContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?)", rowsTable, runsTable, changesTable)
+func readTableInfoPG(ctx context.Context, q *dbConn, table string) (*tableInfo, error) {
+	rows, err := q.QueryContext(ctx, `SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull,
+			a.atthasdef OR a.attidentity <> '' OR a.attgenerated <> '',
+			CASE WHEN EXISTS (SELECT 1 FROM pg_catalog.pg_index i
+				WHERE i.indrelid = a.attrelid AND i.indisprimary AND a.attnum = ANY (i.indkey)) THEN 1 ELSE 0 END,
+			bt.typname, bt.typcategory
+		FROM pg_catalog.pg_attribute a
+		JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
+		JOIN pg_catalog.pg_type bt ON bt.oid = CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE t.oid END
+		WHERE a.attrelid = to_regclass(quote_ident(?)) AND a.attnum > 0 AND NOT a.attisdropped
+		ORDER BY a.attnum`, table)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer rows.Close()
-	var n int
-	if rows.Next() {
-		if err := rows.Scan(&n); err != nil {
+	ti := &tableInfo{name: table, cols: map[string]colInfo{}}
+	var pks []colInfo
+	for rows.Next() {
+		var c colInfo
+		var typname, category string
+		if err := rows.Scan(&c.name, &c.declared, &c.notNull, &c.hasDflt, &c.pk, &typname, &category); err != nil {
+			return nil, err
+		}
+		c.kind = pgKind(typname)
+		if category != "" {
+			c.category = category[0]
+		}
+		ti.cols[c.name] = c
+		if c.pk > 0 {
+			pks = append(pks, c)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ti.cols) == 0 {
+		return nil, fmt.Errorf("table %q doesn't exist in the database (create it with your migrations first)", table)
+	}
+	if len(pks) == 1 {
+		ti.idCol = pks[0].name // PostgreSQL has no rowid; a referenced table needs a one-column primary key
+	}
+	return ti, nil
+}
+
+func ledgerExists(ctx context.Context, q *dbConn) (bool, error) {
+	for _, t := range []string{rowsTable, runsTable, changesTable} {
+		if ok, err := q.tableExists(ctx, t); err != nil || !ok {
 			return false, err
 		}
 	}
-	return n == 3, rows.Err()
+	return true, nil
 }
 
 // Init creates the ledger tables if they don't exist. Apply does this on its
@@ -165,10 +202,14 @@ func Init(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	defer conn.Close()
-	return createLedger(ctx, conn)
+	q, err := newDBConn(ctx, conn)
+	if err != nil {
+		return err
+	}
+	return createLedger(ctx, q)
 }
 
-func createLedger(ctx context.Context, q querier) error {
+func createLedger(ctx context.Context, q *dbConn) error {
 	for _, s := range ledgerSchema {
 		if _, err := q.ExecContext(ctx, s); err != nil {
 			return fmt.Errorf("creating the ledger: %w", err)
@@ -188,7 +229,7 @@ type ledgerRow struct {
 	retired bool
 }
 
-func readLedger(ctx context.Context, q querier, table string) (map[string]*ledgerRow, error) {
+func readLedger(ctx context.Context, q *dbConn, table string) (map[string]*ledgerRow, error) {
 	out := map[string]*ledgerRow{}
 	rows, err := q.QueryContext(ctx, "SELECT key, vals, retired FROM "+rowsTable+" WHERE tbl = ?", table)
 	if err != nil {
@@ -216,21 +257,12 @@ func readLedger(ctx context.Context, q querier, table string) (map[string]*ledge
 
 // readKnownRefs is every column that has been a reference, by table, so a
 // column the seed stops naming is still read as one.
-func readKnownRefs(ctx context.Context, q querier) (map[string]map[string]*Ref, error) {
+func readKnownRefs(ctx context.Context, q *dbConn) (map[string]map[string]*Ref, error) {
 	out := map[string]map[string]*Ref{}
-	rows, err := q.QueryContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?", refsTable)
-	if err != nil {
-		return nil, err
+	if ok, err := q.tableExists(ctx, refsTable); err != nil || !ok {
+		return out, err
 	}
-	var n int
-	if rows.Next() {
-		rows.Scan(&n)
-	}
-	rows.Close()
-	if n == 0 {
-		return out, nil
-	}
-	rows, err = q.QueryContext(ctx, "SELECT tbl, col, ref FROM "+refsTable)
+	rows, err := q.QueryContext(ctx, "SELECT tbl, col, ref FROM "+refsTable)
 	if err != nil {
 		return nil, err
 	}
@@ -300,33 +332,65 @@ func decodeVals(s string) (map[string]Value, error) {
 	return out, nil
 }
 
-// readRows reads the given columns of every row of a table. Each column is
-// read as +column, an expression with no declared type, so the driver
-// hands back what SQLite stored rather than converting by type name (as
-// drivers do for BOOLEAN, DATE and DATETIME columns).
-func readRows(ctx context.Context, q querier, table string, cols []string) ([][]Value, error) {
+// readRows reads the given columns of every row of a table. On SQLite each
+// column is read as +column, an expression with no declared type, so the
+// driver hands back what SQLite stored rather than converting by type name
+// (as drivers do for BOOLEAN, DATE and DATETIME columns). On PostgreSQL each
+// is read as the text the server prints for it.
+func readRows(ctx context.Context, q *dbConn, info *tableInfo, cols []string) ([][]Value, error) {
+	return readRowsWhere(ctx, q, info, cols, "")
+}
+
+// readRowsWhere is readRows for the rows that match a condition.
+func readRowsWhere(ctx context.Context, q *dbConn, info *tableInfo, cols []string, where string, args ...any) ([][]Value, error) {
 	qc := make([]string, len(cols))
 	for i, c := range cols {
-		qc[i] = "+" + quoteIdent(c)
+		if q.pg {
+			qc[i] = "CAST(" + quoteIdent(c) + " AS text)"
+		} else {
+			qc[i] = "+" + quoteIdent(c)
+		}
 	}
-	rows, err := q.QueryContext(ctx, "SELECT "+strings.Join(qc, ", ")+" FROM "+quoteIdent(table))
+	query := "SELECT " + strings.Join(qc, ", ") + " FROM " + quoteIdent(info.name)
+	if where != "" {
+		query += " WHERE " + where
+	}
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out [][]Value
 	for rows.Next() {
-		raw := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range raw {
-			ptrs[i] = &raw[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			return nil, err
-		}
 		vals := make([]Value, len(cols))
-		for i, x := range raw {
-			vals[i] = fromDB(x)
+		if q.pg {
+			texts := make([]sql.NullString, len(cols))
+			ptrs := make([]any, len(cols))
+			for i := range texts {
+				ptrs[i] = &texts[i]
+			}
+			if err := rows.Scan(ptrs...); err != nil {
+				return nil, err
+			}
+			for i, s := range texts {
+				v, err := pgValue(s, info.cols[cols[i]].kind)
+				if err != nil {
+					return nil, fmt.Errorf("reading %s.%s: %w", info.name, cols[i], err)
+				}
+				vals[i] = v
+			}
+		} else {
+			raw := make([]any, len(cols))
+			ptrs := make([]any, len(cols))
+			for i := range raw {
+				ptrs[i] = &raw[i]
+			}
+			if err := rows.Scan(ptrs...); err != nil {
+				return nil, err
+			}
+			for i, x := range raw {
+				vals[i] = fromDB(x)
+			}
 		}
 		out = append(out, vals)
 	}
@@ -348,7 +412,11 @@ type Run struct {
 }
 
 // History returns the last n applies, newest first (all of them if n <= 0).
-func History(ctx context.Context, db *sql.DB, n int) ([]Run, error) {
+func History(ctx context.Context, sqldb *sql.DB, n int) ([]Run, error) {
+	db, err := newDBConn(ctx, sqldb)
+	if err != nil {
+		return nil, err
+	}
 	ok, err := ledgerExists(ctx, db)
 	if err != nil || !ok {
 		return nil, err
@@ -384,7 +452,7 @@ type LoggedChange struct {
 	Note   string `json:"note,omitempty"`
 }
 
-func readChangeLog(ctx context.Context, q querier, table, key string) ([]LoggedChange, error) {
+func readChangeLog(ctx context.Context, q *dbConn, table, key string) ([]LoggedChange, error) {
 	rows, err := q.QueryContext(ctx, `SELECT c.run, r.at, c.action, c.col, c.old, c.new, c.note
 		FROM `+changesTable+` c JOIN `+runsTable+` r ON r.id = c.run
 		WHERE c.tbl = ? AND c.key = ? ORDER BY c.run, c.seq`, table, key)

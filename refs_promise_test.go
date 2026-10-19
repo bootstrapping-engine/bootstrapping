@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -55,20 +54,24 @@ type refsStats struct {
 }
 
 func TestPromiseReferences(t *testing.T) {
+	eachBackend(t, testPromiseReferences)
+}
+
+func testPromiseReferences(t *testing.T, b backend) {
 	histories := 60 * scale()
 	if testing.Short() {
 		histories = 10
 	}
 	var st refsStats
 	for h := 0; h < histories; h++ {
-		refsHistory(t, int64(1000+h), &st)
+		refsHistory(t, b, int64(1000+h), &st)
 	}
 	st.Histories = histories
 	t.Logf("%+v", st)
 	if st.Renames == 0 || st.NotesKept == 0 || st.Skipped == 0 || st.Protected == 0 || st.Deleted == 0 || st.Blocked == 0 {
 		t.Fatalf("the histories didn't reach every case: %+v", st)
 	}
-	record(t, "references", st)
+	record(t, resultName("references", b), st)
 }
 
 type refsSeed struct {
@@ -125,15 +128,12 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-func refsHistory(t *testing.T, seed int64, st *refsStats) {
+func refsHistory(t *testing.T, b backend, seed int64, st *refsStats) {
 	ctx := context.Background()
 	rng := rand.New(rand.NewSource(seed))
-	db, err := sql.Open("sqlite3", "file:"+filepath.Join(t.TempDir(), "r.db")+"?_foreign_keys=1&_busy_timeout=30000")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := b.open(t)
 	defer db.Close()
-	mustExec(t, db, refsSchema)
+	mustExec(t, db, b.ddl(refsSchema))
 	removes := []string{`"keep"`, `"delete"`, `{ retire = "retired_at" }`}
 	roleRemove, permRemove := removes[rng.Intn(3)], removes[rng.Intn(3)]
 
@@ -256,10 +256,13 @@ func refsHistory(t *testing.T, seed int64, st *refsStats) {
 		if actions(pre) != actions(p) {
 			t.Fatalf("%s: preview and apply differ:\npreview %s\n  apply %s", where, actions(pre), actions(p))
 		}
-		var n int
-		db.QueryRow("SELECT count(*) FROM pragma_foreign_key_check").Scan(&n)
-		var ok string
-		db.QueryRow("PRAGMA integrity_check").Scan(&ok)
+		// PostgreSQL checks foreign keys on every statement, so a broken one
+		// would have failed the apply; SQLite is asked.
+		n, ok := 0, "ok"
+		if !b.pg {
+			db.QueryRow("SELECT count(*) FROM pragma_foreign_key_check").Scan(&n)
+			db.QueryRow("PRAGMA integrity_check").Scan(&ok)
+		}
 		st.FKChecks++
 		if n != 0 || ok != "ok" {
 			t.Fatalf("%s: %d foreign key violations, integrity %q", where, n, ok)

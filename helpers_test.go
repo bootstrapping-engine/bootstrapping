@@ -68,7 +68,11 @@ func setFrom(t testing.TB, files map[string]string) *bs.Set {
 // dump is every row of every table, ledger included, as text.
 func dump(t testing.TB, db *sql.DB) string {
 	t.Helper()
-	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+	q := "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+	if isPG(db) {
+		q = "SELECT tablename FROM pg_tables WHERE schemaname = current_schema() ORDER BY tablename"
+	}
+	rows, err := db.Query(q)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +90,18 @@ func dump(t testing.TB, db *sql.DB) string {
 			t.Fatal(err)
 		}
 		cols, _ := r.Columns()
+		// PostgreSQL never gives back a sequence's numbers, even when the
+		// transaction that drew them rolls back, so after a failed apply the
+		// next one's new rows get other ids than a clean apply's would. The
+		// test tables' ids are left out there; everything else must match.
+		skip := -1
+		if isPG(db) && tbl == "items" {
+			for i, c := range cols {
+				if c == "id" {
+					skip = i
+				}
+			}
+		}
 		var lines []string
 		for r.Next() {
 			vals := make([]any, len(cols))
@@ -98,6 +114,9 @@ func dump(t testing.TB, db *sql.DB) string {
 			}
 			parts := make([]string, len(vals))
 			for i, v := range vals {
+				if i == skip {
+					continue
+				}
 				if bb, ok := v.([]byte); ok {
 					v = string(bb)
 				}

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -114,7 +115,7 @@ func copyFile(t *testing.T, from, to string) {
 
 func applyIn(t *testing.T, path, seeds string, progress func(bs.Change)) *bs.Plan {
 	t.Helper()
-	db := openPath(t, path)
+	db := openLoc(t, path)
 	defer db.Close()
 	set, err := bs.LoadDir(seeds)
 	if err != nil {
@@ -129,7 +130,7 @@ func applyIn(t *testing.T, path, seeds string, progress func(bs.Change)) *bs.Pla
 
 func dumpPath(t *testing.T, path string) string {
 	t.Helper()
-	db := openPath(t, path)
+	db := openLoc(t, path)
 	defer db.Close()
 	return dump(t, db)
 }
@@ -151,7 +152,7 @@ type crashStats struct {
 	KilledByTimer    int     `json:"killed_at_a_random_moment"`
 	FoundBefore      int     `json:"found_as_before"`
 	FoundAfter       int     `json:"found_as_after"`
-	IntegrityPassed  int     `json:"integrity_checks_passed"`
+	IntegrityPassed  int     `json:"integrity_checks_passed,omitempty"` // SQLite's integrity check
 	ReappliesMatched int     `json:"reapplies_matching_a_clean_apply"`
 }
 
@@ -161,24 +162,44 @@ type crashStats struct {
 // SQLite's integrity check passes; and that applying again ends in exactly
 // the state a clean apply gives.
 func TestCrash(t *testing.T) {
+	eachBackend(t, testCrash)
+}
+
+const itemsDDL = "CREATE TABLE items (id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, a TEXT, b INTEGER, s TEXT, l TEXT)"
+
+func testCrash(t *testing.T, b backend) {
 	dir := t.TempDir()
 	rows := 1500
 	v1, v2 := bigSeeds(t, dir, rows, 1), bigSeeds(t, dir, rows, 2)
-	start := filepath.Join(dir, "start.db")
-	db := openPath(t, start)
-	mustExec(t, db, "CREATE TABLE items (id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, a TEXT, b INTEGER, s TEXT, l TEXT)")
-	db.Close()
-	applyIn(t, start, v1, nil)
-	// Local edits, so the next apply keeps some and conflicts with none.
-	db = openPath(t, start)
-	mustExec(t, db, "UPDATE items SET l = 'edited' WHERE id % 7 = 0")
-	mustExec(t, db, "DELETE FROM items WHERE id % 50 = 0")
-	db.Close()
+	// prepare makes the starting state: v1 applied, then local edits, so
+	// the next apply keeps some and conflicts with none. On SQLite it's
+	// made once and copied; on PostgreSQL it's made again in a new schema,
+	// the same way each time.
+	prepare := func(loc string) {
+		db := openLoc(t, loc)
+		mustExec(t, db, b.ddl(itemsDDL))
+		db.Close()
+		applyIn(t, loc, v1, nil)
+		db = openLoc(t, loc)
+		mustExec(t, db, "UPDATE items SET l = 'edited' WHERE id % 7 = 0")
+		mustExec(t, db, "DELETE FROM items WHERE id % 50 = 0")
+		db.Close()
+	}
+	start := newLoc(t, b, dir, "start")
+	prepare(start)
+	fresh := func(name string) string {
+		loc := newLoc(t, b, dir, name)
+		if b.pg {
+			prepare(loc)
+		} else {
+			copyFile(t, start, loc)
+		}
+		return loc
+	}
 	before := dumpPath(t, start)
 
 	// A clean apply, counted and timed: the outcome every trial must match.
-	ref := filepath.Join(dir, "ref.db")
-	copyFile(t, start, ref)
+	ref := fresh("ref")
 	statements := 0
 	began := time.Now()
 	applyIn(t, ref, v2, func(bs.Change) { statements++ })
@@ -190,13 +211,15 @@ func TestCrash(t *testing.T) {
 
 	st := crashStats{Rows: rows, Statements: statements, ApplySeconds: took.Seconds()}
 	trials := 40 * scale()
+	if b.pg {
+		trials = 10 * scale() // each trial builds its starting state again, which takes a few seconds
+	}
 	if testing.Short() {
 		trials = 6
 	}
 	rng := rand.New(rand.NewSource(1))
 	for i := 0; i < trials; i++ {
-		path := filepath.Join(dir, fmt.Sprintf("trial-%d.db", i))
-		copyFile(t, start, path)
+		path := fresh(fmt.Sprintf("trial%d", i))
 		midway := i%2 == 0
 		var cmd *exec.Cmd
 		if midway {
@@ -238,23 +261,25 @@ func TestCrash(t *testing.T) {
 		default:
 			t.Fatalf("trial %d: the database is neither as it was nor as an apply leaves it", i)
 		}
-		db := openPath(t, path)
-		var ok string
-		if err := db.QueryRow("PRAGMA integrity_check").Scan(&ok); err != nil || ok != "ok" {
-			t.Fatalf("trial %d: integrity check: %q %v", i, ok, err)
+		if !b.pg {
+			db := openLoc(t, path)
+			var ok string
+			if err := db.QueryRow("PRAGMA integrity_check").Scan(&ok); err != nil || ok != "ok" {
+				t.Fatalf("trial %d: integrity check: %q %v", i, ok, err)
+			}
+			db.Close()
+			st.IntegrityPassed++
 		}
-		db.Close()
-		st.IntegrityPassed++
 		applyIn(t, path, v2, nil)
 		if dumpPath(t, path) != after {
 			t.Fatalf("trial %d: applying again didn't give the clean apply's result", i)
 		}
 		st.ReappliesMatched++
 		st.Trials++
-		os.Remove(path)
+		dropLoc(t, path)
 	}
 	t.Logf("%+v", st)
-	record(t, "crash", st)
+	record(t, resultName("crash", b), st)
 }
 
 type processStats struct {
@@ -271,11 +296,15 @@ type processStats struct {
 // exactly one of them must write; the rest wait for its lock and then find
 // nothing to do; and the file must end up exactly as a single apply leaves it.
 func TestProcesses(t *testing.T) {
+	eachBackend(t, testProcesses)
+}
+
+func testProcesses(t *testing.T, b backend) {
 	dir := t.TempDir()
-	path, ref := filepath.Join(dir, "shared.db"), filepath.Join(dir, "ref.db")
+	path, ref := newLoc(t, b, dir, "shared"), newLoc(t, b, dir, "ref")
 	for _, p := range []string{path, ref} {
-		db := openPath(t, p)
-		mustExec(t, db, "CREATE TABLE items (id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, a TEXT, b INTEGER, s TEXT, l TEXT)")
+		db := openLoc(t, p)
+		mustExec(t, db, b.ddl(itemsDDL))
 		db.Close()
 	}
 	rounds, procs := 6*scale(), 8
@@ -336,9 +365,48 @@ func TestProcesses(t *testing.T) {
 		st.Rounds++
 	}
 	t.Logf("%+v", st)
-	record(t, "processes", st)
+	record(t, resultName("processes", b), st)
 }
 
-func openChild(path string) (*sql.DB, error) {
-	return sql.Open("sqlite3", "file:"+path+"?_busy_timeout=30000")
+func openChild(loc string) (*sql.DB, error) {
+	if strings.Contains(loc, "://") {
+		return sql.Open("postgres", loc)
+	}
+	return sql.Open("sqlite3", "file:"+loc+"?_busy_timeout=30000")
+}
+
+// A location is where a test database lives: a SQLite file, or a
+// PostgreSQL URL whose search_path is a schema of its own.
+
+func newLoc(t *testing.T, b backend, dir, name string) string {
+	t.Helper()
+	if !b.pg {
+		return filepath.Join(dir, name+".db")
+	}
+	db := b.open(t) // makes the schema and drops it after the test
+	schema := currentSchema(t, db)
+	db.Close()
+	return pgURLWith(schema)
+}
+
+func openLoc(t *testing.T, loc string) *sql.DB {
+	t.Helper()
+	if !strings.Contains(loc, "://") {
+		return openPath(t, loc)
+	}
+	db, err := sql.Open("postgres", loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pgDBs.Store(db, true)
+	return db
+}
+
+func dropLoc(t *testing.T, loc string) {
+	if !strings.Contains(loc, "://") {
+		os.Remove(loc)
+		return
+	}
+	u, _ := url.Parse(loc)
+	pgAdmin.Exec("DROP SCHEMA " + u.Query().Get("search_path") + " CASCADE")
 }

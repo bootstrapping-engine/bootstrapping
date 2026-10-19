@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	bs "github.com/bootstrapping-engine/bootstrapping"
+	_ "github.com/lib/pq"           // the PostgreSQL driver the command ships with
 	_ "github.com/mattn/go-sqlite3" // the SQLite driver the command ships with
 )
 
@@ -43,7 +44,8 @@ Commands:
   version   print the version
 
 Flags, for every command:
-  -db FILE      the SQLite database (or $BOOTSTRAPPING_DB)
+  -db DB        the SQLite database file, or a PostgreSQL URL such as
+                postgres://user@host/dbname (or $BOOTSTRAPPING_DB)
   -seeds DIR    the seed files (or $BOOTSTRAPPING_SEEDS; default "seeds")
   -json         print JSON instead of text
   -markdown     plan, status and apply: print the plan as Markdown, for a
@@ -74,7 +76,7 @@ func Main(name string, args []string, stdout, stderr io.Writer) int {
 	c := &command{name: name, cmd: cmd, stdout: stdout, stderr: stderr}
 	fs := flag.NewFlagSet(name+" "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&c.dbPath, "db", os.Getenv("BOOTSTRAPPING_DB"), "the SQLite database")
+	fs.StringVar(&c.dbPath, "db", os.Getenv("BOOTSTRAPPING_DB"), "the SQLite file or PostgreSQL URL")
 	seeds := os.Getenv("BOOTSTRAPPING_SEEDS")
 	if seeds == "" {
 		seeds = "seeds"
@@ -174,12 +176,21 @@ func parseTake(s string) (bs.Resolution, error) {
 
 func (c *command) open() (*sql.DB, error) {
 	if c.dbPath == "" {
-		return nil, errors.New("no database: give -db FILE or set BOOTSTRAPPING_DB")
+		return nil, errors.New("no database: give -db with a SQLite file or a postgres:// URL, or set BOOTSTRAPPING_DB")
+	}
+	if isPostgresURL(c.dbPath) {
+		return sql.Open("postgres", c.dbPath)
 	}
 	if _, err := os.Stat(c.dbPath); err != nil {
 		return nil, fmt.Errorf("no database at %s", c.dbPath)
 	}
 	return sql.Open("sqlite3", dsn(c.dbPath))
+}
+
+// isPostgresURL reports whether -db names a PostgreSQL server rather than a
+// SQLite file.
+func isPostgresURL(s string) bool {
+	return strings.HasPrefix(s, "postgres://") || strings.HasPrefix(s, "postgresql://")
 }
 
 // dsn makes a file path into a SQLite URI, escaping the characters a URI

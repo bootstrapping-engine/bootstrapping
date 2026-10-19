@@ -272,8 +272,9 @@ type rowWork struct {
 type tableWork struct {
 	t       *Table
 	info    *tableInfo
-	aff     map[string]Affinity // the affinity a column's natural value takes
-	refs    map[string]*refMap  // by column
+	ci      map[string]colInfo          // the column a column's natural value is typed by: its own, or the one a reference names
+	cast    map[string]map[string]Value // PostgreSQL: seed text -> value, by column
+	refs    map[string]*refMap          // by column
 	rows    []*rowWork
 	byKey   map[string]*rowWork
 	live    map[string]*liveRow // every live row, managed or not
@@ -298,14 +299,67 @@ func Preview(ctx context.Context, db *sql.DB, set *Set, opts *Options) (*Plan, e
 		return nil, err
 	}
 	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, "BEGIN"); err != nil {
+	q, err := newDBConn(ctx, conn)
+	if err != nil {
 		return nil, err
 	}
-	defer conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
-	return buildPlan(ctx, conn, set, opts)
+	end, err := q.begin(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	defer end(false)
+	return buildPlan(ctx, q, set, opts)
 }
 
-func buildPlan(ctx context.Context, q querier, set *Set, opts *Options) (*Plan, error) {
+// natural converts a seed value to the value its column stores.
+func (tw *tableWork) natural(ctx context.Context, q *dbConn, x any, col string) (Value, error) {
+	ci := tw.ci[col]
+	if !q.pg {
+		return canonical(ctx, q, x, ci.aff)
+	}
+	s, err := pgSeedText(x, ci)
+	if err != nil {
+		return NullValue, err
+	}
+	if v, ok := tw.cast[col][s]; ok {
+		return v, nil
+	}
+	m, err := q.pgCast(ctx, ci, []string{s})
+	if err != nil {
+		return NullValue, err
+	}
+	return m[s], nil
+}
+
+// prefetchCasts has PostgreSQL convert every seed value in one statement
+// per column rather than one per value. A value that doesn't fit its type
+// is left out, to be converted (and reported, with its row) on its own.
+func (tw *tableWork) prefetchCasts(ctx context.Context, q *dbConn) {
+	t := tw.t
+	for _, c := range t.Columns {
+		seen := map[string]bool{}
+		var texts []string
+		add := func(x any) {
+			if s, err := pgSeedText(x, tw.ci[c.Name]); err == nil && !seen[s] {
+				seen[s] = true
+				texts = append(texts, s)
+			}
+		}
+		for _, sr := range t.Rows {
+			if x, ok := sr.Values[c.Name]; ok {
+				add(x)
+			}
+			if i, isKey := tw.keyIdx[c.Name]; isKey && sr.RenamedFrom != nil {
+				add(sr.RenamedFrom[i])
+			}
+		}
+		if m, err := q.pgCast(ctx, tw.ci[c.Name], texts); err == nil {
+			tw.cast[c.Name] = m
+		}
+	}
+}
+
+func buildPlan(ctx context.Context, q *dbConn, set *Set, opts *Options) (*Plan, error) {
 	if opts == nil {
 		opts = &Options{}
 	}
@@ -349,7 +403,7 @@ func buildPlan(ctx context.Context, q querier, set *Set, opts *Options) (*Plan, 
 	}
 }
 
-func planOnce(ctx context.Context, q querier, set *Set, opts *Options, hasLedger bool, known map[string]map[string]*Ref, protect map[string]map[string]string) (*Plan, error) {
+func planOnce(ctx context.Context, q *dbConn, set *Set, opts *Options, hasLedger bool, known map[string]map[string]*Ref, protect map[string]map[string]string) (*Plan, error) {
 	p := &Plan{SeedHash: set.Hash}
 	works := map[string]*tableWork{}
 	for _, t := range set.Tables {
@@ -482,12 +536,12 @@ func (tw *tableWork) postValues(col string) map[string]Value {
 	return out
 }
 
-func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works map[string]*tableWork, known map[string]map[string]*Ref) (*tableWork, error) {
+func loadTable(ctx context.Context, q *dbConn, t *Table, hasLedger bool, works map[string]*tableWork, known map[string]map[string]*Ref) (*tableWork, error) {
 	info, err := readTableInfo(ctx, q, t.Name)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", t.File, err)
 	}
-	tw := &tableWork{t: t, info: info, aff: map[string]Affinity{}, refs: map[string]*refMap{}, byKey: map[string]*rowWork{}, keyIdx: map[string]int{}}
+	tw := &tableWork{t: t, info: info, ci: map[string]colInfo{}, cast: map[string]map[string]Value{}, refs: map[string]*refMap{}, byKey: map[string]*rowWork{}, keyIdx: map[string]int{}}
 	for i, k := range t.Key {
 		tw.keyIdx[k] = i
 	}
@@ -496,14 +550,14 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 		if !ok {
 			return nil, fmt.Errorf("%s: table %q has no column %q", t.File, t.Name, c.Name)
 		}
-		tw.aff[c.Name] = ci.aff
+		tw.ci[c.Name] = ci
 		if c.Ref != nil {
 			rm, err := loadRef(ctx, q, c.Ref, works)
 			if err != nil {
 				return nil, fmt.Errorf("%s: column %q: %w", t.File, c.Name, err)
 			}
 			tw.refs[c.Name] = rm
-			tw.aff[c.Name] = rm.target.cols[c.Ref.Column].aff
+			tw.ci[c.Name] = rm.target.cols[c.Ref.Column]
 		}
 	}
 	if t.RetireColumn != "" {
@@ -521,7 +575,10 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 		}
 	}
 
-	// The seed rows, converted the way SQLite would store them.
+	// The seed rows, converted the way the database would store them.
+	if q.pg {
+		tw.prefetchCasts(ctx, q)
+	}
 	seedRows := map[string]*rowWork{}
 	var order []string
 	renames := map[string][]Value{}
@@ -533,7 +590,7 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 				vals[c.Name] = NullValue
 				continue
 			}
-			v, err := canonical(ctx, q, x, tw.aff[c.Name])
+			v, err := tw.natural(ctx, q, x, c.Name)
 			if err != nil {
 				return nil, fmt.Errorf("%s, column %q: %w", sr.where(t), c.Name, err)
 			}
@@ -555,7 +612,7 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 		if sr.RenamedFrom != nil {
 			old := make([]Value, len(t.Key))
 			for i, k := range t.Key {
-				v, err := canonical(ctx, q, sr.RenamedFrom[i], tw.aff[k])
+				v, err := tw.natural(ctx, q, sr.RenamedFrom[i], k)
 				if err != nil {
 					return nil, fmt.Errorf("%s, _renamed_from: %w", sr.where(t), err)
 				}
@@ -633,7 +690,7 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 	if t.RetireColumn != "" {
 		cols = append(cols, t.RetireColumn)
 	}
-	raw, err := readRows(ctx, q, t.Name, cols)
+	raw, err := readRows(ctx, q, info, cols)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", t.Name, err)
 	}
@@ -791,7 +848,7 @@ func indexOf(xs []string, x string) int {
 	return -1
 }
 
-func loadRef(ctx context.Context, q querier, ref *Ref, works map[string]*tableWork) (*refMap, error) {
+func loadRef(ctx context.Context, q *dbConn, ref *Ref, works map[string]*tableWork) (*refMap, error) {
 	target, err := readTableInfo(ctx, q, ref.Table)
 	if err != nil {
 		return nil, fmt.Errorf("reference %s: %w", ref, err)
@@ -802,7 +859,7 @@ func loadRef(ctx context.Context, q querier, ref *Ref, works map[string]*tableWo
 	if target.idCol == "" {
 		return nil, fmt.Errorf("reference %s: %q has no single primary key or rowid to point at", ref, ref.Table)
 	}
-	rows, err := readRows(ctx, q, ref.Table, []string{target.idCol, ref.Column})
+	rows, err := readRows(ctx, q, target, []string{target.idCol, ref.Column})
 	if err != nil {
 		return nil, fmt.Errorf("reference %s: %w", ref, err)
 	}

@@ -17,7 +17,11 @@ CREATE TABLE countries (id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, name 
 	area REAL, currency_id INTEGER REFERENCES currencies (id), note TEXT);`
 
 func TestCSVRows(t *testing.T) {
-	f := fkFixture(t, countriesSchema)
+	eachBackend(t, testCSVRows)
+}
+
+func testCSVRows(t *testing.T, b backend) {
+	f := fixtureOn(t, b, countriesSchema)
 	files := map[string]string{
 		"currencies.toml": "table = \"currencies\"\nkey = \"code\"\nrows = \"currencies.csv\"\n",
 		"currencies.csv":  "\xef\xbb\xbfcode,digits\nEUR,2\nJPY,0\n",
@@ -32,11 +36,20 @@ func TestCSVRows(t *testing.T) {
 
 	// Text from the CSV is stored the way the column's type stores it, and
 	// an empty cell is NULL.
-	if got := f.one("SELECT typeof(population) || ' ' || typeof(area) || ' ' || quote(area) FROM countries WHERE code = 'DE'"); got != "integer real 357588.5" {
-		t.Fatalf("DE: %s", got)
-	}
-	if got := f.one("SELECT quote(area) || ' ' || quote(note) FROM countries WHERE code = 'FR'"); got != "NULL NULL" {
-		t.Fatalf("FR: %s", got)
+	if b.pg {
+		if got := f.one("SELECT population + 1 || ' ' || area * 2 FROM countries WHERE code = 'DE'"); got != "84000001 715177" {
+			t.Fatalf("DE: %s", got)
+		}
+		if got := f.one("SELECT count(*) FROM countries WHERE code = 'FR' AND area IS NULL AND note IS NULL"); got != "1" {
+			t.Fatalf("FR: %s", got)
+		}
+	} else {
+		if got := f.one("SELECT typeof(population) || ' ' || typeof(area) || ' ' || quote(area) FROM countries WHERE code = 'DE'"); got != "integer real 357588.5" {
+			t.Fatalf("DE: %s", got)
+		}
+		if got := f.one("SELECT quote(area) || ' ' || quote(note) FROM countries WHERE code = 'FR'"); got != "NULL NULL" {
+			t.Fatalf("FR: %s", got)
+		}
 	}
 	if got := f.one("SELECT note FROM countries WHERE code = 'JP'"); got != "Says \"hello\",\nin two lines" {
 		t.Fatalf("JP note: %q", got)
@@ -56,6 +69,9 @@ func TestCSVRows(t *testing.T) {
 	}
 	expect(t, f.agree(toml), "")
 
+	if b.pg {
+		return // the rest stores empty text in a REAL column, which only SQLite takes
+	}
 	// A change in the CSV, a rename, a dropped row and a custom delimiter
 	// and null marker.
 	files["countries.toml"] = strings.Replace(files["countries.toml"], `rows = "data/countries.csv"`, `rows = { file = "data/countries.csv", delimiter = ";", null = "\\N" }`, 1)

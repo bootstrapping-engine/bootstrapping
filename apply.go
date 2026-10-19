@@ -52,9 +52,13 @@ var ErrBlocked = errors.New("conflicts block the apply; settle them with on_conf
 // together, and commits. If a conflict blocks it, it writes nothing and
 // returns the plan with ErrBlocked. If anything fails, nothing is written.
 //
-// Apply uses one connection from db and holds SQLite's write lock for the
-// whole transaction (BEGIN IMMEDIATE), so two applies never interleave: the
-// second waits for the first and then finds nothing left to do.
+// Apply uses one connection from db. On SQLite it holds the write lock for
+// the whole transaction (BEGIN IMMEDIATE); on PostgreSQL it takes an
+// advisory lock, then plans and writes in one REPEATABLE READ transaction.
+// Either way two applies never interleave: the second waits for the first
+// and then finds nothing left to do. On PostgreSQL, an admin editing a row
+// the apply is about to write makes the apply fail with a serialization
+// error, and nothing is written; applying again plans with the edit.
 func Apply(ctx context.Context, db *sql.DB, set *Set, opts *Options) (*Plan, error) {
 	if opts == nil {
 		opts = &Options{}
@@ -64,26 +68,17 @@ func Apply(ctx context.Context, db *sql.DB, set *Set, opts *Options) (*Plan, err
 		return nil, err
 	}
 	defer conn.Close()
-
-	// Wait for another writer rather than failing at once, unless the
-	// connection already says how long to wait.
-	var busy int
-	if r := conn.QueryRowContext(ctx, "PRAGMA busy_timeout"); r.Scan(&busy) == nil && busy == 0 {
-		if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout = 30000"); err == nil {
-			defer conn.ExecContext(context.WithoutCancel(ctx), "PRAGMA busy_timeout = 0")
-		}
+	q, err := newDBConn(ctx, conn)
+	if err != nil {
+		return nil, err
 	}
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return nil, fmt.Errorf("starting the transaction: %w", err)
+	end, err := q.begin(ctx, true)
+	if err != nil {
+		return nil, err
 	}
-	done := false
-	defer func() {
-		if !done {
-			conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
-		}
-	}()
+	defer end(false)
 
-	p, err := buildPlan(ctx, conn, set, opts)
+	p, err := buildPlan(ctx, q, set, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -93,27 +88,26 @@ func Apply(ctx context.Context, db *sql.DB, set *Set, opts *Options) (*Plan, err
 	if !p.Pending() {
 		return p, nil // in step already; don't record an empty run
 	}
-	if err := createLedger(ctx, conn); err != nil {
+	if err := createLedger(ctx, q); err != nil {
 		return nil, err
 	}
-	w := &writer{ctx: ctx, q: conn, opts: opts, plan: p, at: opts.now().UTC().Format(time.RFC3339)}
+	w := &writer{ctx: ctx, q: q, opts: opts, plan: p, at: opts.now().UTC().Format(time.RFC3339)}
 	if err := w.q.QueryRowContext(ctx, "SELECT coalesce(max(id), 0) + 1 FROM "+runsTable).Scan(&w.run); err != nil {
 		return nil, err
 	}
 	if err := w.write(); err != nil {
 		return nil, err
 	}
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return nil, fmt.Errorf("committing: %w", err)
+	if err := end(true); err != nil {
+		return nil, err
 	}
-	done = true
 	p.Applied, p.Run = true, w.run
 	return p, nil
 }
 
 type writer struct {
 	ctx  context.Context
-	q    *sql.Conn
+	q    *dbConn
 	opts *Options
 	plan *Plan
 	at   string
@@ -245,7 +239,7 @@ func (w *writer) selfOrder(tw *tableWork, dels []*rowWork) ([]*rowWork, error) {
 			for _, rw := range rest {
 				args := make([]any, len(rw.live.rawKey))
 				for i, v := range rw.live.rawKey {
-					args[i] = v.Any()
+					args[i] = v
 				}
 				if _, err := w.q.ExecContext(w.ctx, "UPDATE "+quoteIdent(tw.t.Name)+" SET "+strings.Join(sets, ", ")+" WHERE "+w.whereKey(tw), args...); err != nil {
 					return nil, fmt.Errorf("deleting %s %s: %w", tw.t.Name, keyText(rw.keyVals), err)
@@ -300,7 +294,7 @@ func (p *Plan) pointedAt() map[*rowWork]bool {
 func (w *writer) whereKey(tw *tableWork) string {
 	parts := make([]string, len(tw.t.Key))
 	for i, k := range tw.t.Key {
-		parts[i] = quoteIdent(k) + " IS ?"
+		parts[i] = w.q.eq(k, tw.info.cols[k])
 	}
 	return strings.Join(parts, " AND ")
 }
@@ -349,7 +343,7 @@ func (w *writer) writeRow(tw *tableWork, rw *rowWork, ph phase) error {
 			if err != nil {
 				return err
 			}
-			cols, marks, args = append(cols, quoteIdent(c.Name)), append(marks, "?"), append(args, v)
+			cols, marks, args = append(cols, quoteIdent(c.Name)), append(marks, w.q.ph(tw.info.cols[c.Name])), append(args, v)
 		}
 		q := "INSERT INTO " + quoteIdent(t.Name) + " (" + strings.Join(cols, ", ") + ") VALUES (" + strings.Join(marks, ", ") + ")"
 		if err := w.exec(rw, ActInsert, q, args...); err != nil {
@@ -383,7 +377,7 @@ func (w *writer) writeRow(tw *tableWork, rw *rowWork, ph phase) error {
 			if rw.retire {
 				v, act, note = TextValue(w.at), ActRetire, w.at
 			}
-			q := "UPDATE " + quoteIdent(t.Name) + " SET " + quoteIdent(t.RetireColumn) + " = ? WHERE " + w.whereKey(tw)
+			q := "UPDATE " + quoteIdent(t.Name) + " SET " + quoteIdent(t.RetireColumn) + " = " + w.q.ph(tw.info.cols[t.RetireColumn]) + " WHERE " + w.whereKey(tw)
 			if err := w.exec(rw, act, q, append([]Value{v}, where...)...); err != nil {
 				return fmt.Errorf("%s %s %s: %w", act, t.Name, keyText(rw.keyVals), err)
 			}
@@ -430,7 +424,7 @@ func (w *writer) update(tw *tableWork, rw *rowWork, act Action, where []Value, s
 		if err != nil {
 			return err
 		}
-		cols, args = append(cols, quoteIdent(c.Name)+" = ?"), append(args, sv)
+		cols, args = append(cols, quoteIdent(c.Name)+" = "+w.q.ph(tw.info.cols[c.Name])), append(args, sv)
 		if !t.isKey(c.Name) {
 			logged = append(logged, c)
 		}
@@ -495,21 +489,14 @@ func (w *writer) stored(tw *tableWork, col string, v Value) (Value, error) {
 	if rm == nil || v.IsNull() {
 		return v, nil
 	}
-	rows, err := w.q.QueryContext(w.ctx, "SELECT "+quoteIdent(rm.target.idCol)+" FROM "+quoteIdent(rm.ref.Table)+" WHERE "+quoteIdent(rm.ref.Column)+" = ? LIMIT 2", v.Any())
+	rows, err := readRowsWhere(w.ctx, w.q, rm.target, []string{rm.target.idCol},
+		quoteIdent(rm.ref.Column)+" = "+w.q.ph(rm.target.cols[rm.ref.Column])+" LIMIT 2", v)
 	if err != nil {
 		return NullValue, err
 	}
-	defer rows.Close()
 	var ids []Value
-	for rows.Next() {
-		var x any
-		if err := rows.Scan(&x); err != nil {
-			return NullValue, err
-		}
-		ids = append(ids, fromDB(x))
-	}
-	if err := rows.Err(); err != nil {
-		return NullValue, err
+	for _, r := range rows {
+		ids = append(ids, r[0])
 	}
 	switch len(ids) {
 	case 1:
@@ -523,7 +510,7 @@ func (w *writer) stored(tw *tableWork, col string, v Value) (Value, error) {
 func (w *writer) exec(rw *rowWork, act Action, q string, args ...Value) error {
 	xs := make([]any, len(args))
 	for i, a := range args {
-		xs[i] = a.Any()
+		xs[i] = a
 	}
 	if _, err := w.q.ExecContext(w.ctx, q, xs...); err != nil {
 		return err
@@ -620,14 +607,19 @@ func Explain(ctx context.Context, db *sql.DB, set *Set, table, key string, opts 
 		return nil, err
 	}
 	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, "BEGIN"); err != nil {
+	q, err := newDBConn(ctx, conn)
+	if err != nil {
 		return nil, err
 	}
-	defer conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
+	end, err := q.begin(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	defer end(false)
 	if set.Table(table) == nil {
 		return nil, fmt.Errorf("no seed file covers table %q", table)
 	}
-	p, err := buildPlan(ctx, conn, set, opts)
+	p, err := buildPlan(ctx, q, set, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -658,10 +650,10 @@ func Explain(ctx context.Context, db *sql.DB, set *Set, table, key string, opts 
 		for _, i := range match.changes {
 			rep.Changes = append(rep.Changes, p.Changes[i])
 		}
-		if ok, err := ledgerExists(ctx, conn); err != nil {
+		if ok, err := ledgerExists(ctx, q); err != nil {
 			return nil, err
 		} else if ok {
-			if rep.History, err = readChangeLog(ctx, conn, table, match.key); err != nil {
+			if rep.History, err = readChangeLog(ctx, q, table, match.key); err != nil {
 				return nil, err
 			}
 		}

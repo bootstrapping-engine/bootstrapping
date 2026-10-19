@@ -11,6 +11,8 @@ The Go package depends on:
 The bootstrapping, bst and bootstrapping-demo commands and their
 ready-built binaries also contain:
   mattn/go-sqlite3, Copyright (c) 2014 Yasuhiro Matsumoto, MIT License
+  lib/pq, Copyright (c) 2011-2013 'pq' Contributors, portions
+  Copyright (c) 2011 Blake Mizerany, MIT License
   SQLite 3.53.4, in the public domain
   The Go runtime and standard library, Copyright 2009 The Go Authors,
   BSD-style license

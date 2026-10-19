@@ -9,9 +9,12 @@
 # JSON file of their figures there. The numbers in the README and on
 # bootstrapping.org come from these files.
 #
-#   sh scripts/record-tests.sh
+#   BS_POSTGRES=postgres://user@host/db?sslmode=disable sh scripts/record-tests.sh
 #
-# Needs Go, a C compiler (the SQLite driver is cgo) and Python 3.
+# Needs Go, a C compiler (the SQLite driver is cgo) and Python 3. With
+# BS_POSTGRES naming a PostgreSQL server, the tests that run on every
+# database run on it too, each in a schema of its own, and their figures
+# are written as *-postgres.json; without it, only SQLite is recorded.
 set -eu
 cd "$(dirname "$0")/.."
 out=test/results
@@ -36,12 +39,18 @@ header() {
 
 go vet ./...
 
-cmd="BS_SCALE=$scale go test -count=1 -v -timeout 60m ./..."
+cmd="BS_SCALE=$scale go test -count=1 -v -timeout 120m ./..."
+if [ -n "${BS_POSTGRES:-}" ]; then
+	pg=$(psql "$BS_POSTGRES" -Atc 'SHOW server_version' 2>/dev/null || echo 'version unknown')
+	cmd="$cmd  (with BS_POSTGRES set: PostgreSQL $pg)"
+else
+	echo "BS_POSTGRES isn't set: recording SQLite only" >&2
+fi
 { header "Every test, verbose, at $scale times the CI size; the tests that measure something also write the JSON files here" "$cmd"
-  BS_SCALE=$scale BS_RESULTS="$(pwd)/$out" go test -count=1 -v -timeout 60m ./... 2>&1; } > "$out/tests.txt"
+  BS_SCALE=$scale BS_RESULTS="$(pwd)/$out" go test -count=1 -v -timeout 120m ./... 2>&1; } > "$out/tests.txt"
 
 cmd="go test -race -count=1 ./..."
-{ header "Every test with the race detector, at CI size" "$cmd"; $cmd 2>&1; } > "$out/race.txt"
+{ header "Every test with the race detector, at CI size, on SQLite" "$cmd"; env -u BS_POSTGRES $cmd 2>&1; } > "$out/race.txt"
 
 cmd="python3 -B -m unittest discover -s scripts -p *_test.py -v"
 { header "The release plan's cases" "$cmd"; $cmd 2>&1; } > "$out/release-plan.txt"

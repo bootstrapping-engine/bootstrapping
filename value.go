@@ -225,7 +225,7 @@ func fromSeed(x any, aff Affinity) (Value, error) {
 // canonical converts a seed value with fromSeed, except a real going into
 // a TEXT column: SQLite's rendering of reals as text rounds in its own way,
 // so SQLite itself does that one conversion.
-func canonical(ctx context.Context, q querier, x any, aff Affinity) (Value, error) {
+func canonical(ctx context.Context, q *dbConn, x any, aff Affinity) (Value, error) {
 	v, err := fromSeed(x, aff)
 	if err != nil || aff != AffText {
 		return v, err
