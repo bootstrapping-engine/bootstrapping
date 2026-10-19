@@ -25,6 +25,7 @@ Flags for every command:
 | `-db FILE` | the SQLite database, or `$BOOTSTRAPPING_DB`; it must exist. Any file name works, `?` and `#` included |
 | `-seeds DIR` | the seed directory, or `$BOOTSTRAPPING_SEEDS`, or `seeds` |
 | `-json` | JSON instead of text; errors, flag errors included, as `{"error": "..."}` |
+| `-markdown` | `plan`, `status` and `apply` print the plan as GitHub-flavored Markdown, for a pull request comment; not with `-json` |
 
 `-take` settles conflicts for one apply, and can be repeated. The first that
 matches a conflict wins:
@@ -59,6 +60,53 @@ last part would be taken for a column.
 | `release` | dropped from the seed with `on_remove = "keep"`: no longer managed |
 | `skip` | refers to a row that doesn't exist; tried again next time |
 | `record` | already matches the seed; the ledger records it (`-v`) |
+
+### The plan on a pull request
+
+`-markdown` prints the summary, a warning when conflicts block the apply,
+and a table of changes per seed table, with every value in a code span so
+it shows as itself. The first line is `<!-- bootstrapping-plan -->`, so a CI
+step can find the comment it posted before and replace it. Past 60,000
+characters the table stops with a count of the changes left out, keeping
+the comment under GitHub's limit.
+
+A plan shows what a seed change does to a database, so CI needs one that
+looks like production. A fresh database with the base branch's seeds
+applied works well: the plan is then exactly what the pull request changes.
+
+```yaml
+name: seed plan
+on:
+  pull_request:
+    paths: ["seeds/**"]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install bst
+        run: |
+          curl -sSL https://github.com/bootstrapping-engine/bootstrapping/releases/latest/download/bootstrapping_linux_amd64.tar.gz | tar xz
+          echo "$PWD" >> "$GITHUB_PATH"
+      - name: Plan the seed change
+        run: |
+          sqlite3 ci.db < schema.sql                       # your migrations here
+          git worktree add base "origin/$GITHUB_BASE_REF"
+          bst apply -db ci.db -seeds base/seeds > /dev/null
+          bst plan -markdown -db ci.db -seeds seeds > plan.md || true
+      - name: Comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment "${{ github.event.number }}" --body-file plan.md --edit-last --create-if-none
+```
+
+`plan` exits 2 when there are changes and 3 when a conflict blocks them,
+hence the `|| true`; drop it to fail the check on a conflict.
 
 ### JSON plan
 

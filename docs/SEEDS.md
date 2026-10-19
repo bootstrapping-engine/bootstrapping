@@ -2,6 +2,8 @@
 
 A seed set is a directory of `.toml` files, one per table. Files are read in
 name order, then sorted so a table comes after the tables it references.
+A table's rows are written in its `.toml` file as `[[row]]` tables, or kept
+in a CSV file the `.toml` file names (see [Rows in a CSV file](#rows-in-a-csv-file)).
 Other files in the directory are ignored.
 
 ```toml
@@ -75,6 +77,52 @@ or go.
 One rename per row per apply: a seed that renames `author` to `editor` and
 `editor` to `chief` at once is refused before anything is written, since
 the two can't be told apart from a swap. Apply them one at a time.
+
+## Rows in a CSV file
+
+Long lists, such as countries or currencies, are easier to keep in a CSV
+file. The `.toml` file keeps the settings and names the file instead of
+holding `[[row]]` tables:
+
+```toml
+table = "countries"
+key = "code"
+on_remove = "delete"
+rows = "countries.csv"
+
+[refs]
+currency_id = "currencies.code"
+```
+
+```text
+code,name,population,currency_id
+DE,Germany,84000000,EUR
+JP,Japan,124000000,JPY
+FR,France,,EUR
+```
+
+The first line names the columns. Every cell is text, and the column's
+declared type stores it the way the database would: `84000000` in an
+INTEGER column is the number 84000000, the same value a TOML `84000000`
+gives, so moving rows between TOML and CSV changes nothing. An empty cell
+is NULL. Quoted cells may hold commas, quotes (doubled) and line breaks.
+The file must be UTF-8; a byte order mark at the start is fine.
+
+A `_renamed_from` column gives a row's old key, for tables with a single
+key column; leave it empty for rows that weren't renamed. Tables with a
+composite key keep renames in TOML.
+
+To use another delimiter, or to tell NULL apart from empty text:
+
+```toml
+rows = { file = "countries.csv", delimiter = ";", null = "\\N" }
+```
+
+With `null` set, only cells equal to it are NULL and an empty cell is the
+empty text. The path is relative to the seed directory and can't leave it.
+The CSV file is part of the seed set's hash, and errors name its line:
+`countries.csv: line 12 repeats the key DE`. A table's rows come from
+`[[row]]` tables or a CSV file, not both.
 
 ## columns: who owns a value
 

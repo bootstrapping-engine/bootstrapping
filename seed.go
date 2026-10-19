@@ -89,6 +89,14 @@ type SeedRow struct {
 	Index       int            // position in the file, from 1
 	Values      map[string]any // column -> value as TOML decoded it; absent means NULL
 	RenamedFrom []any          // the row's earlier natural key, if it was renamed
+	Where       string         // where the row was written, for messages: "roles.toml: row 3" or "countries.csv: line 12"
+}
+
+func (r SeedRow) where(t *Table) string {
+	if r.Where != "" {
+		return r.Where
+	}
+	return fmt.Sprintf("%s: row %d", t.File, r.Index)
 }
 
 // Column returns the managed column with this name, or nil.
@@ -134,7 +142,8 @@ func (s *Set) Table(name string) *Table {
 	return nil
 }
 
-// LoadDir reads every .toml file in a directory as a seed set.
+// LoadDir reads every .toml file in a directory as a seed set, with the
+// CSV files they name for their rows.
 func LoadDir(dir string) (*Set, error) {
 	if st, err := os.Stat(dir); err != nil {
 		return nil, fmt.Errorf("seed directory: %w", err)
@@ -171,7 +180,15 @@ func LoadFS(fsys fs.FS, dir string) (*Set, error) {
 		}
 		fmt.Fprintf(h, "%s\x00%d\x00", name, len(data))
 		h.Write(data)
-		t, err := ParseTable(name, data)
+		read := func(file string) ([]byte, error) {
+			b, err := fs.ReadFile(fsys, path.Join(dir, file))
+			if err == nil {
+				fmt.Fprintf(h, "%s\x00%d\x00", file, len(b))
+				h.Write(b)
+			}
+			return b, err
+		}
+		t, err := parseTable(name, data, read)
 		if err != nil {
 			return nil, err
 		}
@@ -229,8 +246,15 @@ func (s *Set) order() error {
 	return nil
 }
 
-// ParseTable reads one seed file. name is used in error messages.
+// ParseTable reads one seed file. name is used in error messages. A file
+// whose rows are in a CSV file needs LoadDir or LoadFS, which can read it.
 func ParseTable(name string, data []byte) (*Table, error) {
+	return parseTable(name, data, func(file string) ([]byte, error) {
+		return nil, fmt.Errorf("can't read %s: use LoadDir or LoadFS for seed files with rows in a CSV file", file)
+	})
+}
+
+func parseTable(name string, data []byte, read func(string) ([]byte, error)) (*Table, error) {
 	var raw map[string]any
 	if _, err := toml.Decode(string(data), &raw); err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
@@ -241,9 +265,9 @@ func ParseTable(name string, data []byte) (*Table, error) {
 	t := &Table{File: name, OnRemove: RemoveKeep, OnConflict: TakeFail, OnLocalDelete: "respect"}
 	for k := range raw {
 		switch k {
-		case "table", "key", "columns", "refs", "on_remove", "on_conflict", "on_local_delete", "row":
+		case "table", "key", "columns", "refs", "on_remove", "on_conflict", "on_local_delete", "row", "rows":
 		default:
-			return nil, fail("unknown setting %q (expected table, key, columns, refs, on_remove, on_conflict, on_local_delete or [[row]])", k)
+			return nil, fail("unknown setting %q (expected table, key, columns, refs, on_remove, on_conflict, on_local_delete, rows or [[row]])", k)
 		}
 	}
 
@@ -368,9 +392,28 @@ func ParseTable(name string, data []byte) (*Table, error) {
 	if raw["row"] != nil && rowsRaw == nil {
 		return nil, fail("rows must be written as [[row]] tables")
 	}
+	var wheres []string
+	if spec, ok := raw["rows"]; ok {
+		if raw["row"] != nil {
+			return nil, fail("rows come from [[row]] tables or from a CSV file with rows = \"file.csv\", not both")
+		}
+		var err error
+		if rowsRaw, wheres, err = readCSVRows(spec, read); err != nil {
+			return nil, fail("%v", err)
+		}
+	}
 	cols := map[string]bool{}
 	for i, r := range rowsRaw {
 		row := SeedRow{Index: i + 1, Values: map[string]any{}}
+		if wheres != nil {
+			row.Where = wheres[i]
+		}
+		rowFail := func(format string, args ...any) error {
+			if row.Where != "" {
+				return fail("%s"+format, append([]any{row.Where}, args...)...)
+			}
+			return fail("row %d"+format, append([]any{i + 1}, args...)...)
+		}
 		for k, v := range r {
 			if k == "_renamed_from" {
 				switch x := v.(type) {
@@ -380,27 +423,27 @@ func ParseTable(name string, data []byte) (*Table, error) {
 					row.RenamedFrom = []any{x}
 				}
 				if len(row.RenamedFrom) != len(t.Key) {
-					return nil, fail("row %d: _renamed_from needs %d value(s), one per key column", i+1, len(t.Key))
+					return nil, rowFail(": _renamed_from needs %d value(s), one per key column", len(t.Key))
 				}
 				continue
 			}
 			if strings.HasPrefix(k, "_") {
-				return nil, fail("row %d: unknown setting %q (names starting with _ are reserved; the only one is _renamed_from)", i+1, k)
+				return nil, rowFail(": unknown setting %q (names starting with _ are reserved; the only one is _renamed_from)", k)
 			}
 			if err := checkScalar(v); err != nil {
-				return nil, fail("row %d, column %q: %v", i+1, k, err)
+				return nil, rowFail(", column %q: %v", k, err)
 			}
 			row.Values[k] = v
 			cols[k] = true
 		}
 		for _, k := range t.Key {
 			if _, ok := row.Values[k]; !ok {
-				return nil, fail("row %d has no value for key column %q", i+1, k)
+				return nil, rowFail(" has no value for key column %q", k)
 			}
 		}
 		if t.RetireColumn != "" {
 			if _, ok := row.Values[t.RetireColumn]; ok {
-				return nil, fail("row %d sets %q, the retire column; that column is managed by on_remove", i+1, t.RetireColumn)
+				return nil, rowFail(" sets %q, the retire column; that column is managed by on_remove", t.RetireColumn)
 			}
 		}
 		t.Rows = append(t.Rows, row)

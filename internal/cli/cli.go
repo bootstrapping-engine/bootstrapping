@@ -46,6 +46,8 @@ Flags, for every command:
   -db FILE      the SQLite database (or $BOOTSTRAPPING_DB)
   -seeds DIR    the seed files (or $BOOTSTRAPPING_SEEDS; default "seeds")
   -json         print JSON instead of text
+  -markdown     plan, status and apply: print the plan as Markdown, for a
+                pull request comment
 
 apply:   -take seed|local, or -take TABLE[/KEY[/COLUMN]]=seed|local, repeatable
 plan:    -v also lists rows that already match and only need recording
@@ -79,6 +81,7 @@ func Main(name string, args []string, stdout, stderr io.Writer) int {
 	}
 	fs.StringVar(&c.seedDir, "seeds", seeds, "the seed directory")
 	fs.BoolVar(&c.json, "json", false, "print JSON")
+	fs.BoolVar(&c.markdown, "markdown", false, "print the plan as Markdown")
 	fs.BoolVar(&c.verbose, "v", false, "list rows that only need recording")
 	fs.IntVar(&c.n, "n", 0, "how many applies to list")
 	fs.Func("take", "settle conflicts: seed, local, or TABLE[/KEY[/COLUMN]]=seed|local", func(s string) error {
@@ -120,6 +123,10 @@ func Main(name string, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, usage, name)
 		return ExitError
 	}
+	if c.json && c.markdown {
+		fmt.Fprintf(stderr, "%s: -json and -markdown can't be used together\n", name)
+		return ExitError
+	}
 	code, err := c.run(context.Background())
 	if err != nil {
 		if c.json {
@@ -135,6 +142,7 @@ type command struct {
 	name, cmd       string
 	dbPath, seedDir string
 	json, verbose   bool
+	markdown        bool
 	n               int
 	take            []bs.Resolution
 	args            []string
@@ -246,6 +254,10 @@ func (c *command) run(ctx context.Context) (int, error) {
 		if c.json {
 			return code, c.emit(PlanJSON(p))
 		}
+		if c.markdown {
+			RenderMarkdown(c.stdout, p, c.verbose)
+			return code, nil
+		}
 		if c.cmd == "status" {
 			fmt.Fprintln(c.stdout, Summary(p))
 		} else {
@@ -258,6 +270,10 @@ func (c *command) run(ctx context.Context) (int, error) {
 			if c.json {
 				return ExitBlocked, c.emit(PlanJSON(p))
 			}
+			if c.markdown {
+				RenderMarkdown(c.stdout, p, false)
+				return ExitBlocked, nil
+			}
 			RenderPlan(c.stdout, p, false)
 			fmt.Fprintf(c.stdout, "Nothing was written. Settle the conflicts with -take, such as -take local or -take %s, or with on_conflict in the seed file.\n", exampleTake(p))
 			return ExitBlocked, nil
@@ -267,6 +283,10 @@ func (c *command) run(ctx context.Context) (int, error) {
 		}
 		if c.json {
 			return ExitOK, c.emit(PlanJSON(p))
+		}
+		if c.markdown {
+			RenderMarkdown(c.stdout, p, false)
+			return ExitOK, nil
 		}
 		RenderPlan(c.stdout, p, false)
 		return ExitOK, nil

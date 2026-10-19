@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -266,5 +267,72 @@ func TestFlagErrorsAsJSON(t *testing.T) {
 	var got map[string]string
 	if code != ExitError || json.Unmarshal([]byte(out), &got) != nil || !strings.Contains(got["error"], "maybe") || errs != "" {
 		t.Fatalf("got %d %q %q", code, out, errs)
+	}
+}
+
+func TestMarkdownPlan(t *testing.T) {
+	db := setup(t)
+	seeds := func(v string) string { return example + "seeds/" + v }
+	if code, _, errs := run(t, "apply", "-db", db, "-seeds", seeds("v1")); code != ExitOK {
+		t.Fatal(errs)
+	}
+	sqlExec(t, db, "UPDATE roles SET name = 'Content | `Editor`' WHERE code = 'editor'")
+	sqlExec(t, db, "UPDATE roles SET description = 'Edits *everything*' WHERE code = 'editor'")
+	code, out, errs := run(t, "plan", "-markdown", "-db", db, "-seeds", seeds("v2"))
+	if code != ExitBlocked {
+		t.Fatalf("plan: %d %s %s", code, out, errs)
+	}
+	for _, want := range []string{
+		MarkdownMarker + "\n### Seed plan\n",
+		"**Blocked: ",
+		"> [!WARNING]\n> 1 conflict blocks the apply.",
+		"`-take roles/editor/description=local`",
+		"#### role\\_permissions",
+		"| **conflict** | `editor` | `description` |",
+		"local `` \"Content \\| `Editor`\" ``",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in\n%s", want, out)
+		}
+	}
+	// Settled, the same conflict is shown as settled and the apply goes ahead.
+	code, out, _ = run(t, "apply", "-markdown", "-take", "local", "-db", db, "-seeds", seeds("v2"))
+	if code != ExitOK || !strings.Contains(out, "### Seed apply") || !strings.Contains(out, "| conflict, settled |") || strings.Contains(out, "[!WARNING]") {
+		t.Fatalf("apply: %d\n%s", code, out)
+	}
+	// In step: just the summary.
+	code, out, _ = run(t, "plan", "-markdown", "-db", db, "-seeds", seeds("v2"))
+	if code != ExitOK || strings.Contains(out, "insert") || !strings.Contains(out, "**In step with the seed (2 local edits kept).**") {
+		t.Fatalf("in step: %d\n%s", code, out)
+	}
+	if code, _, errs := run(t, "plan", "-markdown", "-json", "-db", db); code != ExitError || !strings.Contains(errs, "can't be used together") {
+		t.Fatalf("-json with -markdown: %d %s", code, errs)
+	}
+}
+
+func TestMarkdownLimit(t *testing.T) {
+	var changes []bs.Change
+	for i := 0; i < 5000; i++ {
+		changes = append(changes, bs.Change{Table: "t", Key: []bs.Value{bs.TextValue(fmt.Sprintf("row-%05d", i))}, Action: bs.ActInsert})
+	}
+	var b bytes.Buffer
+	RenderMarkdown(&b, &bs.Plan{Changes: changes}, false)
+	if b.Len() > 65536 || !strings.Contains(b.String(), "more not shown") {
+		t.Fatalf("%d characters, tail %q", b.Len(), b.String()[b.Len()-80:])
+	}
+}
+
+func TestMarkdownCode(t *testing.T) {
+	for in, want := range map[string]string{
+		`"a"`:     "`\"a\"`",
+		"a|b":     "`a\\|b`",
+		"x`y":     "`` x`y ``",
+		"x``y":    "``` x``y ```",
+		" lead":   "`  lead `",
+		"line\nb": "`line b`",
+	} {
+		if got := mdCode(in); got != want {
+			t.Errorf("mdCode(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

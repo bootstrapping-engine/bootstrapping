@@ -535,7 +535,7 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 			}
 			v, err := canonical(ctx, q, x, tw.aff[c.Name])
 			if err != nil {
-				return nil, fmt.Errorf("%s: row %d, column %q: %w", t.File, sr.Index, c.Name, err)
+				return nil, fmt.Errorf("%s, column %q: %w", sr.where(t), c.Name, err)
 			}
 			vals[c.Name] = v
 		}
@@ -543,12 +543,12 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 		for i, k := range t.Key {
 			kv[i] = vals[k]
 			if kv[i].IsNull() {
-				return nil, fmt.Errorf("%s: row %d: key column %q is empty", t.File, sr.Index, k)
+				return nil, fmt.Errorf("%s: key column %q is empty", sr.where(t), k)
 			}
 		}
 		key := encodeKey(kv)
 		if _, dup := seedRows[key]; dup {
-			return nil, fmt.Errorf("%s: row %d repeats the key %s", t.File, sr.Index, keyText(kv))
+			return nil, fmt.Errorf("%s repeats the key %s", sr.where(t), keyText(kv))
 		}
 		seedRows[key] = &rowWork{key: key, keyVals: kv, seed: vals}
 		order = append(order, key)
@@ -557,7 +557,7 @@ func loadTable(ctx context.Context, q querier, t *Table, hasLedger bool, works m
 			for i, k := range t.Key {
 				v, err := canonical(ctx, q, sr.RenamedFrom[i], tw.aff[k])
 				if err != nil {
-					return nil, fmt.Errorf("%s: row %d, _renamed_from: %w", t.File, sr.Index, err)
+					return nil, fmt.Errorf("%s, _renamed_from: %w", sr.where(t), err)
 				}
 				old[i] = v
 			}
