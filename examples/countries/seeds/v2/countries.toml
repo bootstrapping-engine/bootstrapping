@@ -1,0 +1,6 @@
+table = "countries"
+key = "code"
+rows = "countries.csv"
+
+[refs]
+currency_id = "currencies.code"

@@ -608,6 +608,13 @@ func loadTable(ctx context.Context, q *dbConn, t *Table, hasLedger bool, works m
 			}
 			vals[c.Name] = v
 		}
+		// A column the seed manages is written as the row has it, NULL
+		// included, so a NOT NULL column has to be set by every row.
+		for _, c := range t.Columns {
+			if ci := info.cols[c.Name]; ci.notNull && vals[c.Name].IsNull() && !t.isKey(c.Name) {
+				return nil, fmt.Errorf("%s leaves out %q, which is NOT NULL; give it a value in every row", sr.where(t), c.Name)
+			}
+		}
 		kv := make([]Value, len(t.Key))
 		for i, k := range t.Key {
 			kv[i] = vals[k]

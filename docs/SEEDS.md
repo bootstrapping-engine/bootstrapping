@@ -64,6 +64,9 @@ syntax.
 
 A table with a NOT NULL column that has no default must have it managed by
 the seed; otherwise inserts would fail, so the plan stops early and says so.
+A managed NOT NULL column has to be set in every row, default or not: the
+seed writes the row as it has it, and a value left out is NULL. The plan
+names the row that leaves it out.
 
 ### Renames
 

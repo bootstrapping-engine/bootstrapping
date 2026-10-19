@@ -1,0 +1,31 @@
+table = "states"
+key = "code"
+
+[columns]
+closed = "seed"           # the application relies on it; the seed always wins
+
+[refs]
+next_id = "states.code"   # a state names the next one by code
+
+[[row]]
+code = "new"
+label = "New"
+next_id = "open"
+closed = false
+
+[[row]]
+code = "open"
+label = "Open"
+next_id = "resolved"
+closed = false
+
+[[row]]
+code = "resolved"
+label = "Resolved"
+next_id = "closed"
+closed = false
+
+[[row]]
+code = "closed"
+label = "Closed"
+closed = true

@@ -1,0 +1,34 @@
+table = "templates"
+key = "code"
+
+[columns]
+footer = "seed"     # legal text: the product's wording always wins
+enabled = "local"   # on when shipped; after that, the customer decides
+
+[[row]]
+code = "welcome"
+subject = "Welcome aboard!"   # a small fix from the product team
+body = "Your account is ready. Sign in to get started."
+footer = "You get this email because you have an account with us. Manage email settings in your profile."
+enabled = true
+
+[[row]]
+code = "password_reset"
+subject = "Reset your password"
+body = "Use the link below to choose a new password. It works for one hour."
+footer = "You get this email because you have an account with us. Manage email settings in your profile."
+enabled = true
+
+[[row]]
+code = "invoice"
+subject = "Your invoice"
+body = "Your invoice for this month is attached."
+footer = "You get this email because you have an account with us. Manage email settings in your profile."
+enabled = true
+
+[[row]]
+code = "login_alert"
+subject = "New sign-in to your account"
+body = "Someone signed in from a new device. If it wasn't you, reset your password."
+footer = "You get this email because you have an account with us. Manage email settings in your profile."
+enabled = true

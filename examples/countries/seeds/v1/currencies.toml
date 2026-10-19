@@ -1,0 +1,4 @@
+table = "currencies"
+key = "code"
+on_remove = "delete"
+rows = "currencies.csv"

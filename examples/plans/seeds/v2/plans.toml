@@ -1,0 +1,26 @@
+table = "plans"
+key = "code"
+on_remove = { retire = "retired_at" }   # subscriptions still point at old plans
+
+[columns]
+price_cents = "local"                   # set on insert; after that, each install prices its own plans
+
+# The free plan is dropped: retired, not deleted.
+
+[[row]]
+code = "team"
+name = "Team"
+price_cents = 1500                      # the new list price, for new installs only
+seats = 15                              # was 10
+
+[[row]]
+code = "business"
+name = "Business"
+price_cents = 4900
+seats = 50
+
+[[row]]
+code = "enterprise"
+name = "Enterprise"
+price_cents = 19900
+seats = 500

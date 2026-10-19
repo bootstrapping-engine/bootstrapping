@@ -14,7 +14,11 @@ has the procedure and the checks to run afterwards.
 
 v0.1.0 was the first release (October 2026). v0.2.0 (October 2026) added
 PostgreSQL 12+ support, CSV seed files (`rows = "file.csv"`) and
-`plan -markdown` for pull request comments. Apache 2.0, CI on Linux, macOS
+`plan -markdown` for pull request comments. v0.2.1 (October 2026) made the plan stop on a row that
+leaves out a managed NOT NULL column, found while writing the case studies:
+four example programs in `examples/` (plans, countries, workflow,
+templates) on `examples/internal/story`, run by `go test`, each with a
+case study post on the site. Apache 2.0, CI on Linux, macOS
 and Windows plus a PostgreSQL job (13 and 18), and automated releases with
 smoke-tested binaries for Linux, macOS and Windows. Bootstrapping is a seed
 reconciler: TOML or CSV seed files per table, a three-way merge per value

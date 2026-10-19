@@ -1,0 +1,18 @@
+table = "features"
+key = "code"
+
+[[row]]
+code = "export"
+description = "Export data as CSV"
+
+[[row]]
+code = "api"
+description = "API access"
+
+[[row]]
+code = "audit_log"
+description = "Audit log of every change"
+
+[[row]]
+code = "sso"
+description = "Single sign-on with SAML or OIDC"

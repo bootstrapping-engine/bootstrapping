@@ -1,0 +1,31 @@
+table = "plan_features"
+key = ["plan_id", "feature_id"]
+on_remove = "delete"
+
+[refs]
+plan_id = "plans.code"
+feature_id = "features.code"
+
+[[row]]
+plan_id = "free"
+feature_id = "export"
+
+[[row]]
+plan_id = "team"
+feature_id = "export"
+
+[[row]]
+plan_id = "team"
+feature_id = "api"
+
+[[row]]
+plan_id = "business"
+feature_id = "export"
+
+[[row]]
+plan_id = "business"
+feature_id = "api"
+
+[[row]]
+plan_id = "business"
+feature_id = "audit_log"

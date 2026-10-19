@@ -1,0 +1,38 @@
+table = "states"
+key = "code"
+
+[columns]
+closed = "seed"           # the application relies on it; the seed always wins
+
+[refs]
+next_id = "states.code"   # a state names the next one by code
+
+[[row]]
+code = "new"
+label = "New"
+next_id = "open"
+closed = false
+
+[[row]]
+code = "open"
+label = "Open"
+next_id = "waiting"       # was resolved
+closed = false
+
+[[row]]
+code = "waiting"          # new: the customer has to answer first
+label = "Waiting on customer"
+next_id = "done"
+closed = false
+
+[[row]]
+code = "done"
+_renamed_from = "resolved"   # same row, same id: tickets keep pointing at it
+label = "Done"
+next_id = "closed"
+closed = false
+
+[[row]]
+code = "closed"
+label = "Closed"
+closed = true

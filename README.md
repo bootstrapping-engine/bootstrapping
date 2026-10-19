@@ -77,6 +77,21 @@ Pending: 2 inserts, 2 updates, 1 local edit kept, 1 local delete kept.
 
 The seeds, the schema and the program are in [examples/permissions](examples/permissions).
 
+## Case studies
+
+Four more programs, each a short story with every result checked, run the
+same way as the demo (`go run ./examples/plans` and so on):
+
+| Example | What it shows |
+|---|---|
+| [plans](examples/plans) | SaaS plan tiers: prices each install sets for itself (`local`), a plan retired while customers still subscribe to it, a new tier and its features |
+| [countries](examples/countries) | Countries and currencies in CSV files: Croatia moves to the euro, the kuna is deleted once nothing points at it, two countries get new names |
+| [workflow](examples/workflow) | Helpdesk ticket states: a state renamed under open tickets keeps its id, a new state goes into the chain each state keeps to the next |
+| [templates](examples/templates) | Email templates: a conflict over a subject line, the plan as a pull request comment, legal text the product always owns (`seed`) |
+
+The [bootstrapping.org](https://bootstrapping.org/tags/case-studies/) case
+studies walk through each one.
+
 ## Seed files
 
 One TOML file per table, in a directory:

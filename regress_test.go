@@ -307,3 +307,15 @@ func TestSkippedSelfReferenceLeavesLedgerAlone(t *testing.T) {
 		expect(t, p, "skip roles/x.perm_id; skip roles/a.parent_id")
 	})
 }
+
+// A row that leaves out a NOT NULL column the seed manages is stopped by
+// the plan, not by the insert (found writing the workflow case study).
+func TestRowLeavesOutNotNullColumn(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		f := fixtureOn(t, b, `CREATE TABLE states (id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, closed INTEGER NOT NULL DEFAULT 0)`)
+		set := setFrom(t, map[string]string{"states.toml": "table = \"states\"\nkey = \"code\"\n[[row]]\ncode = \"open\"\n[[row]]\ncode = \"closed\"\nclosed = 1\n"})
+		if _, err := bs.Preview(f.ctx, f.db, set, nil); err == nil || err.Error() != `states.toml: row 1 leaves out "closed", which is NOT NULL; give it a value in every row` {
+			t.Fatalf("got %v", err)
+		}
+	})
+}
