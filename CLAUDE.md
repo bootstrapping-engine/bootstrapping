@@ -73,7 +73,7 @@ the Hugo Launch template copied unchanged from multivergence.com, with
 content and config values only. The old bootstrapping.org site was removed
 entirely, history included, at the owner's request. Pages: about, contact,
 quick start, download, reference. Posts: the launch, a plain explainer of
-reference data drift, how it was tested, and the name. Images are drawn
+reference data drift, how it was tested, the name, and the 0.2 release. Images are drawn
 into static/images. When a recording changes a number, update the site too.
 
 ## Next
