@@ -1,0 +1,11 @@
+{
+  "rows_in_seed": 1500,
+  "statements_per_apply": 1767,
+  "apply_seconds": 1.2799854339999999,
+  "trials": 100,
+  "killed_after_a_statement": 50,
+  "killed_at_a_random_moment": 50,
+  "found_as_before": 73,
+  "found_as_after": 27,
+  "reapplies_matching_a_clean_apply": 100
+}

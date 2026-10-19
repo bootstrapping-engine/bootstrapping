@@ -1,0 +1,17 @@
+{
+  "histories": 1200,
+  "seed_versions": 14400,
+  "applies": 14400,
+  "blocked_applies": 3618,
+  "values_checked": 492228,
+  "rows_checked": 258768,
+  "local_edits_kept": 47330,
+  "seed_changes_landed": 25870,
+  "conflicts_reported": 32015,
+  "conflicts_settled_seed": 11034,
+  "conflicts_settled_local": 10439,
+  "local_deletes_kept": 30063,
+  "rows_retired": 4020,
+  "rows_deleted": 2617,
+  "repeat_applies_checked": 10782
+}
