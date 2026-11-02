@@ -143,11 +143,13 @@ Design decisions:
 
 Steps:
 1. [x] Upkeep: modernc SQLite, go 1.26, CI without the 1.24 job and cgo (84fd219, CI green on 3 OS).
-2. [ ] Phase A: MySQL/MariaDB dialect, CI jobs, tests.
+2. [x] Phase A: MySQL/MariaDB dialect, CI jobs, tests (mysql.go, mysql_test.go; the every-backend suite green on MySQL 8.0/8.4 and MariaDB 10.6/11.8 in CI, and locally on MySQL 8.0 and MariaDB 10.11).
 3. [x] Phase B2: composite references, tests (composite_test.go: TOML and CSV, skip, edits, renames, protected rows, self references, mistakes).
 4. [x] Phase B1: the Action (action.yml) and its test workflow (action-test.yml: local on 3 OS, comment on a kept issue, download after each release).
 5. [x] Docs (README, SEEDS, REFERENCE, ACTION, RELEASING, NOTICE, THIRD_PARTY_LICENSES with a generated per-archive file; record workflow).
 6. [ ] Independent review (at most two rounds), fixes, fresh test/results.
+   Review round 1: blocker, the database URL with its password could reach a public PR comment through CLI errors (url.Parse and lib/pq quote it, and "no database at" echoed unknown schemes); fixed by redact() on every CLI error, generic parse errors, and the Action scrubbing and masking the URL (test: TestErrorsHideTheDatabaseURL, an action-test step). Should-fix, all fixed: MyISAM/MEMORY tables broke all-or-nothing (now refused, TestMySQLNonTransactionalTable); the Action's comment lookup trusted any commenter's marker (now only comment-author's, a failed listing warns instead of duplicating); latest was resolved twice (now once, both files from one tag; the download path now runs on 3 OS before release). Nits fixed: composite parts prefetched per column, docs (GTID, NOT NULL self refs, ledger downgrade, CSV null marker, forks), stale doc comments, GET_LOCK message. Left: VALUES() in upserts (works on 8.4 and MariaDB), tuple text with | colliding under -take (same as 0.2's comma-joined keys).
+   Round 2: one should-fix, a postgres password with " or \ leaked through Go's %q-escaped parse error; fixed (postgres URLs parsed before lib/pq, redact() also replaces quoted forms, cases added). Nits fixed: a latest step in action-test, views on MyISAM documented.
 7. [ ] 0.3.0 released by the workflow, downloads checked.
 8. [ ] bootstrapping.org post with its own SVG, pages; softdevstudio.com
    note; softdev-plan log row.

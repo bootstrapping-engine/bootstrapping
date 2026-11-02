@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	bs "github.com/bootstrapping-engine/bootstrapping"
@@ -184,6 +185,10 @@ func (c *command) open() (*sql.DB, error) {
 		return nil, errors.New("no database: give -db with a SQLite file or a postgres:// or mysql:// URL, or set BOOTSTRAPPING_DB")
 	}
 	if isPostgresURL(c.dbPath) {
+		// lib/pq quotes the URL in its parse errors; read it here first.
+		if _, err := url.Parse(c.dbPath); err != nil {
+			return nil, errors.New("the database URL can't be read (a password with %, \", \\ or another special character has to be percent-encoded)")
+		}
 		return sql.Open("postgres", c.dbPath)
 	}
 	if isMySQLURL(c.dbPath) {
@@ -232,10 +237,14 @@ func (c *command) redact(msg string) string {
 			secrets = append(secrets, p)
 		}
 	}
+	// Also as Go quotes them (%q), which escapes " and \.
+	quoted := func(s string) string { q := strconv.Quote(s); return q[1 : len(q)-1] }
 	msg = strings.ReplaceAll(msg, c.dbPath, shown)
+	msg = strings.ReplaceAll(msg, quoted(c.dbPath), shown)
 	for _, p := range secrets {
 		if len(p) >= 3 {
 			msg = strings.ReplaceAll(msg, p, "xxxxx")
+			msg = strings.ReplaceAll(msg, quoted(p), "xxxxx")
 		}
 	}
 	return msg

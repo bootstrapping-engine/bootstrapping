@@ -69,6 +69,13 @@ jobs:
           database: ${{ env.DB }}
           seeds: examples/permissions/seeds/v1
           version: v0.2.1
+      - name: The latest release, resolved to its tag
+        id: latest
+        uses: ./
+        with:
+          database: ${{ env.DB }}
+          seeds: examples/permissions/seeds/v1
+          version: latest
       - name: Apply v1
         run: '"$BS_BIN" apply -db "$DB" -seeds examples/permissions/seeds/v1'
       - name: In step after the apply
@@ -145,6 +152,7 @@ jobs:
           want "broken" "${{ steps.broken.outputs.result }} ${{ steps.broken.outcome }}" "error failure"
           want "bad switch" "${{ steps.badswitch.outputs.result }} ${{ steps.badswitch.outcome }}" "error failure"
           want "published" "${{ steps.published.outputs.exit-code }} ${{ steps.published.outputs.version }}" "2 v0.2.1"
+          want "latest" "${{ steps.latest.outputs.exit-code }} ${{ steps.latest.outputs.version }}" "2 latest"
           want "unreachable" "${{ steps.unreachable.outputs.result }} ${{ steps.unreachable.outcome }}" "error failure"
           if grep -q hunter22secret "$UNREACHABLE_PLAN" "$GITHUB_STEP_SUMMARY"; then echo "::error::the password is in the plan"; bad=1; fi
           grep -q "couldn't make the plan" "$UNREACHABLE_PLAN" || { echo "::error::no error in the plan file"; bad=1; }

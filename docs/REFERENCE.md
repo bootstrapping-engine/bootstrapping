@@ -268,7 +268,8 @@ takes any `*sql.DB` opened with that driver.
   inside a transaction need `binlog_format=ROW`, MySQL 8's default.
 - **Engines**: managed and referenced tables must be on a transactional
   engine (InnoDB). A MyISAM or MEMORY table is refused before anything is
-  written, since it would keep half an apply after a failure.
+  written, since it would keep half an apply after a failure. A view is
+  taken as it is; it must not sit on such a table either.
 - **The ledger** tables are created before the apply's transaction, since
   MySQL commits on any `CREATE TABLE`, and only once a plan shows the apply
   will write. A row key may be up to 2,816 bytes.
