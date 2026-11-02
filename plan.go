@@ -85,6 +85,14 @@ func plainText(v Value) string {
 		}
 		return v.S
 	}
+	if v.Kind == Tuple { // as a CSV cell writes it: eu|editor
+		parts := v.Parts()
+		texts := make([]string, len(parts))
+		for i, p := range parts {
+			texts[i] = plainText(p)
+		}
+		return strings.Join(texts, "|")
+	}
 	return v.String()
 }
 
@@ -312,17 +320,45 @@ func Preview(ctx context.Context, db *sql.DB, set *Set, opts *Options) (*Plan, e
 	return buildPlan(ctx, q, set, opts)
 }
 
-// natural converts a seed value to the value its column stores.
+// natural converts a seed value to the value its column stores. A
+// reference by several columns becomes a Tuple of its parts, each
+// converted as the column of the referenced table it matches.
 func (tw *tableWork) natural(ctx context.Context, q *dbConn, x any, col string) (Value, error) {
-	ci := tw.ci[col]
+	if rm := tw.refs[col]; rm != nil && len(rm.ref.Columns) > 1 && x != nil {
+		xs, ok := x.([]any)
+		if !ok || len(xs) != len(rm.ref.Columns) {
+			return NullValue, fmt.Errorf("the reference names its row by %d columns; give a list of %d values", len(rm.ref.Columns), len(rm.ref.Columns))
+		}
+		parts := make([]Value, len(xs))
+		for i, part := range xs {
+			v, err := convertSeed(ctx, q, part, rm.target.cols[rm.ref.Columns[i]], nil)
+			if err != nil {
+				return NullValue, err
+			}
+			if v.IsNull() {
+				return NullValue, fmt.Errorf("part %d of the reference is empty; every column that names the row needs a value", i+1)
+			}
+			parts[i] = v
+		}
+		return TupleValue(parts), nil
+	}
+	return convertSeed(ctx, q, x, tw.ci[col], tw.cast[col])
+}
+
+// convertSeed converts one seed value to what a column stores; cache holds
+// values the server already converted.
+func convertSeed(ctx context.Context, q *dbConn, x any, ci colInfo, cache map[string]Value) (Value, error) {
 	if q.sqlite() {
 		return canonical(ctx, q, x, ci.aff)
+	}
+	if x == nil {
+		return NullValue, nil
 	}
 	s, err := q.seedText(x, ci)
 	if err != nil {
 		return NullValue, err
 	}
-	if v, ok := tw.cast[col][s]; ok {
+	if v, ok := cache[s]; ok {
 		return v, nil
 	}
 	m, err := q.cast(ctx, ci, []string{s})
@@ -338,6 +374,9 @@ func (tw *tableWork) natural(ctx context.Context, q *dbConn, x any, col string) 
 func (tw *tableWork) prefetchCasts(ctx context.Context, q *dbConn) {
 	t := tw.t
 	for _, c := range t.Columns {
+		if rm := tw.refs[c.Name]; rm != nil && len(rm.ref.Columns) > 1 {
+			continue // converted part by part, in natural
+		}
 		seen := map[string]bool{}
 		var texts []string
 		add := func(x any) {
@@ -442,7 +481,7 @@ func (p *Plan) stillReferred() map[string]map[string]string {
 				}
 				wanted := from.referring(c.Name)
 				for _, rw := range dels {
-					v := rw.live.nat[rm.ref.Column]
+					v := refVal(rw.live.nat, rm.ref)
 					if !v.IsNull() && wanted[encodeKey([]Value{v})] {
 						if out[target.t.Name] == nil {
 							out[target.t.Name] = map[string]string{}
@@ -492,7 +531,7 @@ func hasKey(m map[string]Value, k string) bool { _, ok := m[k]; return ok }
 
 // afterSet is every natural value a column holds once the apply is done:
 // live rows that stay, with their new values, and inserted rows.
-func (tw *tableWork) afterSet(col string) map[string]bool {
+func (tw *tableWork) afterSet(ref *Ref) map[string]bool {
 	out := map[string]bool{}
 	managed := map[*liveRow]*rowWork{}
 	for _, rw := range tw.rows {
@@ -500,7 +539,7 @@ func (tw *tableWork) afterSet(col string) map[string]bool {
 			managed[rw.live] = rw
 		}
 		if rw.insert && !rw.skipped {
-			if v := rw.seed[col]; !v.IsNull() {
+			if v := refVal(rw.seed, ref); !v.IsNull() {
 				out[encodeKey([]Value{v})] = true
 			}
 		}
@@ -510,28 +549,57 @@ func (tw *tableWork) afterSet(col string) map[string]bool {
 		if rw != nil && rw.del {
 			continue
 		}
-		v := lr.nat[col]
-		if rw != nil && hasKey(rw.sets, col) {
-			v = rw.sets[col]
+		var sets map[string]Value
+		if rw != nil {
+			sets = rw.sets
 		}
-		if !v.IsNull() {
+		if v := refValAfter(lr.nat, sets, ref); !v.IsNull() {
 			out[encodeKey([]Value{v})] = true
 		}
 	}
 	return out
 }
 
+// refVal is the natural value a reference to ref sees in a row's values:
+// the column's value, or a Tuple of its columns' values.
+func refVal(vals map[string]Value, ref *Ref) Value {
+	if len(ref.Columns) == 1 {
+		return vals[ref.Columns[0]]
+	}
+	parts := make([]Value, len(ref.Columns))
+	for i, c := range ref.Columns {
+		parts[i] = vals[c]
+	}
+	return refOf(parts)
+}
+
+// refValAfter is refVal of a row once the apply's updates to it are made.
+func refValAfter(vals, sets map[string]Value, ref *Ref) Value {
+	parts := make([]Value, len(ref.Columns))
+	for i, c := range ref.Columns {
+		parts[i] = vals[c]
+		if hasKey(sets, c) {
+			parts[i] = sets[c]
+		}
+	}
+	return refOf(parts)
+}
+
 // postValues maps a column's natural values as they are now to what they
 // become in this apply, for rows whose value changes: a rename, or an
 // update to that column.
-func (tw *tableWork) postValues(col string) map[string]Value {
+func (tw *tableWork) postValues(ref *Ref) map[string]Value {
 	out := map[string]Value{}
 	for _, rw := range tw.rows {
 		if rw.live == nil || rw.del {
 			continue
 		}
-		if v, ok := rw.sets[col]; ok {
-			out[encodeKey([]Value{rw.live.nat[col]})] = v
+		changed := false
+		for _, c := range ref.Columns {
+			changed = changed || hasKey(rw.sets, c)
+		}
+		if changed {
+			out[encodeKey([]Value{refVal(rw.live.nat, ref)})] = refValAfter(rw.live.nat, rw.sets, ref)
 		}
 	}
 	return out
@@ -561,7 +629,9 @@ func loadTable(ctx context.Context, q *dbConn, t *Table, hasLedger bool, works m
 				return nil, fmt.Errorf("%s: column %q: %w", t.File, c.Name, err)
 			}
 			tw.refs[c.Name] = rm
-			tw.ci[c.Name] = rm.target.cols[c.Ref.Column]
+			if len(c.Ref.Columns) == 1 {
+				tw.ci[c.Name] = rm.target.cols[c.Ref.Column]
+			}
 		}
 	}
 	if t.RetireColumn != "" {
@@ -645,7 +715,7 @@ func loadTable(ctx context.Context, q *dbConn, t *Table, hasLedger bool, works m
 	for _, c := range t.Columns {
 		if rm := tw.refs[c.Name]; rm != nil && rm.ref.Table == t.Name {
 			for _, key := range order {
-				if v := seedRows[key].seed[rm.ref.Column]; !v.IsNull() {
+				if v := refVal(seedRows[key].seed, rm.ref); !v.IsNull() {
 					rm.present[encodeKey([]Value{v})] = true
 				}
 			}
@@ -672,7 +742,7 @@ func loadTable(ctx context.Context, q *dbConn, t *Table, hasLedger bool, works m
 		if rm == nil || rm.ref.Table == t.Name || works[rm.ref.Table] == nil {
 			continue
 		}
-		ledger = translateLedger(ledger, t, c.Name, works[rm.ref.Table].postValues(rm.ref.Column))
+		ledger = translateLedger(ledger, t, c.Name, works[rm.ref.Table].postValues(rm.ref))
 	}
 
 	// The live rows, with references turned into natural keys. Columns the
@@ -784,13 +854,13 @@ func loadTable(ctx context.Context, q *dbConn, t *Table, hasLedger bool, works m
 	// A table referring to itself sees a renamed row by its new name.
 	for _, c := range t.Columns {
 		rm := tw.refs[c.Name]
-		if rm == nil || rm.ref.Table != t.Name || len(t.Key) != 1 || t.Key[0] != rm.ref.Column || t.isKey(c.Name) {
+		if rm == nil || rm.ref.Table != t.Name || strings.Join(t.Key, "\x00") != strings.Join(rm.ref.Columns, "\x00") || t.isKey(c.Name) {
 			continue
 		}
 		renamed := map[string]Value{}
 		for _, key := range order {
 			if rw := seedRows[key]; rw.renamedFrom != nil {
-				renamed[encodeKey(rw.renamedFrom.natKey(t))] = rw.keyVals[0]
+				renamed[encodeKey([]Value{refOf(rw.renamedFrom.natKey(t))})] = refOf(rw.keyVals)
 			}
 		}
 		for _, lr := range live {
@@ -876,22 +946,28 @@ func loadRef(ctx context.Context, q *dbConn, ref *Ref, works map[string]*tableWo
 	if err != nil {
 		return nil, fmt.Errorf("reference %s: %w", ref, err)
 	}
-	if _, ok := target.cols[ref.Column]; !ok {
-		return nil, fmt.Errorf("reference %s: table %q has no column %q", ref, ref.Table, ref.Column)
+	for _, c := range ref.Columns {
+		if _, ok := target.cols[c]; !ok {
+			return nil, fmt.Errorf("reference %s: table %q has no column %q", ref, ref.Table, c)
+		}
 	}
 	if target.idCol == "" {
 		return nil, fmt.Errorf("reference %s: %q has no single primary key or rowid to point at", ref, ref.Table)
 	}
-	rows, err := readRows(ctx, q, target, []string{target.idCol, ref.Column})
+	rows, err := readRows(ctx, q, target, append([]string{target.idCol}, ref.Columns...))
 	if err != nil {
 		return nil, fmt.Errorf("reference %s: %w", ref, err)
 	}
 	rm := &refMap{ref: ref, target: target, toNat: map[string]Value{}, present: map[string]bool{}}
 	count := map[string]int{}
 	for _, r := range rows {
-		rm.toNat[encodeKey([]Value{r[0]})] = r[1]
-		if !r[1].IsNull() {
-			k := encodeKey([]Value{r[1]})
+		nat := refOf(r[1:])
+		if nat.IsNull() && len(ref.Columns) > 1 {
+			continue // a row with a NULL in its name can't be named
+		}
+		rm.toNat[encodeKey([]Value{r[0]})] = nat
+		if !nat.IsNull() {
+			k := encodeKey([]Value{nat})
 			rm.present[k] = true
 			count[k]++
 		}
@@ -906,8 +982,8 @@ func loadRef(ctx context.Context, q *dbConn, ref *Ref, works map[string]*tableWo
 	// apply: rows it inserts count, rows it deletes don't, and a row whose
 	// value changes (a rename, or an update) answers to the new value.
 	if tw := works[ref.Table]; tw != nil {
-		rm.present = tw.afterSet(ref.Column)
-		post := tw.postValues(ref.Column)
+		rm.present = tw.afterSet(ref)
+		post := tw.postValues(ref)
 		for id, nat := range rm.toNat {
 			if n, ok := post[encodeKey([]Value{nat})]; ok {
 				rm.toNat[id] = n
@@ -971,8 +1047,7 @@ func (tw *tableWork) settleSelfRefs(p *Plan) {
 	for changed := true; changed; {
 		changed = false
 		for _, col := range cols {
-			target := tw.refs[col].ref.Column
-			after := tw.afterSet(target)
+			after := tw.afterSet(tw.refs[col].ref)
 			ok := func(v Value) bool { return v.IsNull() || after[encodeKey([]Value{v})] }
 			for _, rw := range tw.rows {
 				switch {

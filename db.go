@@ -310,11 +310,11 @@ func readKnownRefs(ctx context.Context, q *dbConn) (map[string]map[string]*Ref, 
 		if err := rows.Scan(&tbl, &col, &ref); err != nil {
 			return nil, err
 		}
-		if t, c, ok := strings.Cut(ref, "."); ok {
+		if r, ok := parseRef(ref); ok {
 			if out[tbl] == nil {
 				out[tbl] = map[string]*Ref{}
 			}
-			out[tbl][col] = &Ref{Table: t, Column: c}
+			out[tbl][col] = r
 		}
 	}
 	return out, rows.Err()

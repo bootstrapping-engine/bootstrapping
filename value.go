@@ -14,7 +14,9 @@ import (
 	"time"
 )
 
-// Kind is the storage class of a Value, the same five SQLite uses.
+// Kind is the storage class of a Value, the same five SQLite uses, plus
+// Tuple: the natural value of a reference that names its row by several
+// columns.
 type Kind uint8
 
 const (
@@ -23,6 +25,7 @@ const (
 	Real
 	Text
 	Blob
+	Tuple
 )
 
 // Value is one cell, in the form SQLite stores it. Values from seed files
@@ -43,7 +46,35 @@ func IntValue(i int64) Value    { return Value{Kind: Integer, I: i} }
 func RealValue(f float64) Value { return Value{Kind: Real, F: f} }
 func TextValue(s string) Value  { return Value{Kind: Text, S: s} }
 func BlobValue(b []byte) Value  { return Value{Kind: Blob, S: string(b)} }
-func (v Value) IsNull() bool    { return v.Kind == Null }
+
+// TupleValue is several values taken together, such as the region and code
+// that name a referenced row. It is kept as their encoded list, so two
+// tuples are equal when every part is.
+func TupleValue(parts []Value) Value { return Value{Kind: Tuple, S: encodeKey(parts)} }
+
+// Parts is a Tuple's values.
+func (v Value) Parts() []Value {
+	if v.Kind != Tuple {
+		return nil
+	}
+	parts, _ := decodeKey(v.S)
+	return parts
+}
+
+// refOf is the natural value of a reference by the given values: the value
+// itself for one column, a Tuple for several.
+func refOf(parts []Value) Value {
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	for _, p := range parts {
+		if p.IsNull() {
+			return NullValue // a row with a NULL in its name can't be named
+		}
+	}
+	return TupleValue(parts)
+}
+func (v Value) IsNull() bool { return v.Kind == Null }
 func (v Value) Equal(w Value) bool {
 	return v.Kind == w.Kind && v.I == w.I && sameFloat(v.F, w.F) && v.S == w.S
 }
@@ -79,6 +110,13 @@ func (v Value) String() string {
 		return strconv.Quote(v.S)
 	case Blob:
 		return "x'" + fmt.Sprintf("%x", v.S) + "'"
+	case Tuple:
+		parts := v.Parts()
+		texts := make([]string, len(parts))
+		for i, p := range parts {
+			texts[i] = p.String()
+		}
+		return "(" + strings.Join(texts, ", ") + ")"
 	}
 	return "NULL"
 }
@@ -98,12 +136,20 @@ func (v Value) JSON() any {
 		return v.S
 	case Blob:
 		return base64.StdEncoding.EncodeToString([]byte(v.S))
+	case Tuple:
+		parts := v.Parts()
+		out := make([]any, len(parts))
+		for i, p := range parts {
+			out[i] = p.JSON()
+		}
+		return out
 	}
 	return nil
 }
 
 // encode and decode give the lossless form kept in the ledger: "n", "i:42",
-// "r:1.5", "t:text" or "b:base64".
+// "r:1.5", "t:text", "b:base64", or for a Tuple "k:" and the JSON list of
+// its parts' encodings.
 func (v Value) encode() string {
 	switch v.Kind {
 	case Integer:
@@ -114,6 +160,8 @@ func (v Value) encode() string {
 		return "t:" + v.S
 	case Blob:
 		return "b:" + base64.StdEncoding.EncodeToString([]byte(v.S))
+	case Tuple:
+		return "k:" + v.S
 	}
 	return "n"
 }
@@ -138,6 +186,12 @@ func decodeValue(s string) (Value, error) {
 	case 'b':
 		b, err := base64.StdEncoding.DecodeString(body)
 		return BlobValue(b), err
+	case 'k':
+		parts, err := decodeKey(body)
+		if err != nil || len(parts) < 2 {
+			return NullValue, fmt.Errorf("bad stored value %q", s)
+		}
+		return TupleValue(parts), nil
 	}
 	return NullValue, fmt.Errorf("bad stored value %q", s)
 }

@@ -62,13 +62,74 @@ type Column struct {
 
 // Ref says a column holds a reference to another table's row, written in
 // the seed by that row's natural key: `role_id = "roles.code"` lets a seed
-// say role_id = "editor" and stores the editor row's primary key.
+// say role_id = "editor" and stores the editor row's primary key. A row
+// named by several columns is written `role_id = "roles.(region, code)"`,
+// and the seed gives the values as a list: role_id = ["eu", "editor"].
 type Ref struct {
-	Table  string
-	Column string
+	Table   string
+	Column  string   // the column, or for several "(a, b)"
+	Columns []string // the columns that name the row, in order
 }
 
 func (r Ref) String() string { return r.Table + "." + r.Column }
+
+// parseRef reads "table.column" or "table.(a, b)".
+func parseRef(s string) (*Ref, bool) {
+	tbl, c, found := strings.Cut(s, ".")
+	if !found || tbl == "" || c == "" {
+		return nil, false
+	}
+	if !strings.HasPrefix(c, "(") {
+		if strings.Contains(c, ".") {
+			return nil, false
+		}
+		return &Ref{Table: tbl, Column: c, Columns: []string{c}}, true
+	}
+	if !strings.HasSuffix(c, ")") {
+		return nil, false
+	}
+	var cols []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(c[1:len(c)-1], ",") {
+		part = strings.TrimSpace(part)
+		if part == "" || seen[part] || strings.ContainsAny(part, ".()") {
+			return nil, false
+		}
+		seen[part] = true
+		cols = append(cols, part)
+	}
+	if len(cols) < 2 {
+		return nil, false
+	}
+	return &Ref{Table: tbl, Column: "(" + strings.Join(cols, ", ") + ")", Columns: cols}, true
+}
+
+// refParts checks the value a seed gives a reference by several columns:
+// a list of that many values, or in a CSV cell the values joined by |.
+func refParts(v any, n int) (any, error) {
+	var parts []any
+	switch x := v.(type) {
+	case nil:
+		return nil, nil
+	case []any:
+		parts = x
+	case csvText:
+		for _, p := range strings.Split(string(x), "|") {
+			parts = append(parts, csvText(p))
+		}
+	default:
+		return nil, fmt.Errorf("the reference names its row by %d columns; give a list of %d values, such as [\"eu\", \"editor\"] (in a CSV cell, eu|editor)", n, n)
+	}
+	if len(parts) != n {
+		return nil, fmt.Errorf("the reference names its row by %d columns; got %d values", n, len(parts))
+	}
+	for _, p := range parts {
+		if err := checkScalar(p); err != nil {
+			return nil, err
+		}
+	}
+	return parts, nil
+}
 
 // Table is one seed file: the rows a table should contain and the rules for
 // keeping them in step.
@@ -380,11 +441,11 @@ func parseTable(name string, data []byte, read func(string) ([]byte, error)) (*T
 		}
 		for col, spec := range m {
 			s, _ := spec.(string)
-			tbl, c, found := strings.Cut(s, ".")
-			if !found || tbl == "" || c == "" || strings.Contains(c, ".") {
-				return nil, fail(`ref %q must be "table.column", the referenced table and the column that names its rows`, col)
+			ref, ok := parseRef(s)
+			if !ok {
+				return nil, fail(`ref %q must be "table.column", the referenced table and the column that names its rows, or "table.(a, b)" for a row named by several columns`, col)
 			}
-			refs[col] = &Ref{Table: tbl, Column: c}
+			refs[col] = ref
 		}
 	}
 
@@ -429,6 +490,15 @@ func parseTable(name string, data []byte, read func(string) ([]byte, error)) (*T
 			}
 			if strings.HasPrefix(k, "_") {
 				return nil, rowFail(": unknown setting %q (names starting with _ are reserved; the only one is _renamed_from)", k)
+			}
+			if ref := refs[k]; ref != nil && len(ref.Columns) > 1 {
+				parts, err := refParts(v, len(ref.Columns))
+				if err != nil {
+					return nil, rowFail(", column %q: %v", k, err)
+				}
+				row.Values[k] = parts
+				cols[k] = true
+				continue
 			}
 			if err := checkScalar(v); err != nil {
 				return nil, rowFail(", column %q: %v", k, err)

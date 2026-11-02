@@ -270,7 +270,7 @@ func (w *writer) selfOrder(tw *tableWork, dels []*rowWork) ([]*rowWork, error) {
 	pointsAt := func(from, to *rowWork) bool {
 		for _, col := range cols {
 			v := from.live.nat[col]
-			if !v.IsNull() && v.Equal(to.live.nat[tw.refs[col].ref.Column]) {
+			if !v.IsNull() && v.Equal(refVal(to.live.nat, tw.refs[col].ref)) {
 				return true
 			}
 		}
@@ -359,7 +359,7 @@ func (p *Plan) pointedAt() map[*rowWork]bool {
 						if rm == nil || rm.ref.Table != target.t.Name {
 							continue
 						}
-						want := rw.live.nat[rm.ref.Column]
+						want := refVal(rw.live.nat, rm.ref)
 						for _, lr := range from.live {
 							if lr != rw.live && !early[lr] && lr.nat[c.Name].Equal(want) {
 								out[rw], grew = true, true
@@ -571,8 +571,17 @@ func (w *writer) stored(tw *tableWork, col string, v Value) (Value, error) {
 	if rm == nil || v.IsNull() {
 		return v, nil
 	}
+	parts, conds := []Value{v}, make([]string, len(rm.ref.Columns))
+	if len(rm.ref.Columns) > 1 {
+		parts = v.Parts()
+	}
+	args := make([]any, len(parts))
+	for i, c := range rm.ref.Columns {
+		conds[i] = quoteIdent(c) + " = " + w.q.ph(rm.target.cols[c])
+		args[i] = parts[i]
+	}
 	rows, err := readRowsWhere(w.ctx, w.q, rm.target, []string{rm.target.idCol},
-		quoteIdent(rm.ref.Column)+" = "+w.q.ph(rm.target.cols[rm.ref.Column])+" LIMIT 2", v)
+		strings.Join(conds, " AND ")+" LIMIT 2", args...)
 	if err != nil {
 		return NullValue, err
 	}
