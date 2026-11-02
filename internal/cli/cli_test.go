@@ -23,7 +23,7 @@ const example = "../../examples/permissions/"
 func setup(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "app.db")
-	db, err := sql.Open("sqlite3", path)
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func run(t *testing.T, args ...string) (int, string, string) {
 
 func sqlExec(t *testing.T, path, q string) {
 	t.Helper()
-	db, err := sql.Open("sqlite3", path)
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestOddDatabaseName(t *testing.T) {
 		name = "my app#2%41.db"
 	}
 	path := filepath.Join(t.TempDir(), name)
-	db, err := sql.Open("sqlite3", dsn(path))
+	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		t.Fatal(err)
 	}

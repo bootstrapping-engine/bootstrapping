@@ -58,7 +58,7 @@ func fixtureOn(t *testing.T, b backend, schema string) *fixture {
 
 func fkFixture(t *testing.T, schema string) *fixture {
 	t.Helper()
-	db, err := sql.Open("sqlite3", "file:"+filepath.Join(t.TempDir(), "fk.db")+"?_foreign_keys=1&_busy_timeout=30000")
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "fk.db")+"?_foreign_keys=1&_busy_timeout=30000")
 	if err != nil {
 		t.Fatal(err)
 	}

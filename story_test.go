@@ -13,7 +13,7 @@ import (
 	"time"
 
 	bs "github.com/bootstrapping-engine/bootstrapping"
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 // The demo's story, step by step, with every expectation spelled out: what
@@ -22,7 +22,7 @@ import (
 func openDB(t *testing.T) *sql.DB {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "app.db")
-	db, err := sql.Open("sqlite3", path+"?_busy_timeout=10000")
+	db, err := sql.Open("sqlite", path+"?_busy_timeout=10000")
 	if err != nil {
 		t.Fatal(err)
 	}

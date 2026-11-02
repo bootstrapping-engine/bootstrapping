@@ -27,7 +27,7 @@ import (
 
 	bs "github.com/bootstrapping-engine/bootstrapping"
 	"github.com/bootstrapping-engine/bootstrapping/internal/cli"
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 //go:embed schema.sql seeds
@@ -65,7 +65,7 @@ func must(err error) {
 }
 
 func open(path string) *sql.DB {
-	db, err := sql.Open("sqlite3", "file:"+path+"?_busy_timeout=30000")
+	db, err := sql.Open("sqlite", "file:"+path+"?_busy_timeout=30000")
 	must(err)
 	return db
 }

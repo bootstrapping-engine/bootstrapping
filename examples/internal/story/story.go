@@ -22,7 +22,7 @@ import (
 
 	bs "github.com/bootstrapping-engine/bootstrapping"
 	"github.com/bootstrapping-engine/bootstrapping/internal/cli"
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 // Story is one example's database and its seeds.
@@ -51,7 +51,7 @@ func Run(files fs.FS, dir string, out io.Writer, title string, steps func(s *Sto
 	}
 	path := filepath.Join(dir, "app.db")
 	os.Remove(path)
-	db, err := sql.Open("sqlite3", "file:"+path+"?_foreign_keys=1&_busy_timeout=30000")
+	db, err := sql.Open("sqlite", "file:"+path+"?_foreign_keys=1&_busy_timeout=30000")
 	if err != nil {
 		return err
 	}

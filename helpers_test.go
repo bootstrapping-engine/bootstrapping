@@ -44,7 +44,7 @@ func record(t *testing.T, name string, v any) {
 
 func openPath(t testing.TB, path string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite3", "file:"+path+"?_busy_timeout=30000")
+	db, err := sql.Open("sqlite", "file:"+path+"?_busy_timeout=30000")
 	if err != nil {
 		t.Fatal(err)
 	}

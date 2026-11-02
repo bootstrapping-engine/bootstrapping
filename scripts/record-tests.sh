@@ -11,7 +11,7 @@
 #
 #   BS_POSTGRES=postgres://user@host/db?sslmode=disable sh scripts/record-tests.sh
 #
-# Needs Go, a C compiler (the SQLite driver is cgo) and Python 3. With
+# Needs Go and Python 3 (and a C compiler for the race detector). With
 # BS_POSTGRES naming a PostgreSQL server, the tests that run on every
 # database run on it too, each in a schema of its own, and their figures
 # are written as *-postgres.json; without it, only SQLite is recorded.
@@ -58,9 +58,9 @@ cmd="python3 -B -m unittest discover -s scripts -p *_test.py -v"
 tags=sqlite_omit_load_extension,osusergo,netgo
 mkdir "$work/bin"
 for c in bootstrapping bst; do
-	CGO_ENABLED=1 go build -trimpath -tags $tags -ldflags '-s -w -extldflags "-static"' -o "$work/bin/$c" ./cmd/$c 2>/dev/null
+	CGO_ENABLED=0 go build -trimpath -tags $tags -ldflags '-s -w' -o "$work/bin/$c" ./cmd/$c
 done
-CGO_ENABLED=1 go build -trimpath -tags $tags -ldflags '-s -w -extldflags "-static"' -o "$work/bin/bootstrapping-demo" ./examples/permissions 2>/dev/null
+CGO_ENABLED=0 go build -trimpath -tags $tags -ldflags '-s -w' -o "$work/bin/bootstrapping-demo" ./examples/permissions
 
 cmd="bootstrapping-demo"
 { header "The demo: roles and permissions through three seed versions, a conflict and an apply killed halfway" "$cmd"

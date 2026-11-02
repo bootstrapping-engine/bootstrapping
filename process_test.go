@@ -372,7 +372,7 @@ func openChild(loc string) (*sql.DB, error) {
 	if strings.Contains(loc, "://") {
 		return sql.Open("postgres", loc)
 	}
-	return sql.Open("sqlite3", "file:"+loc+"?_busy_timeout=30000")
+	return sql.Open("sqlite", "file:"+loc+"?_busy_timeout=30000")
 }
 
 // A location is where a test database lives: a SQLite file, or a

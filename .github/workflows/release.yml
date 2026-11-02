@@ -60,9 +60,9 @@ jobs:
           INPUT_TAG: ${{ inputs.tag }}
         run: python3 scripts/release-plan.py
 
-  # The SQLite driver is cgo, so each target is built on its own kind of
-  # machine and checked there before it is packed. macOS Intel is built on
-  # Apple silicon and can only be checked for its architecture.
+  # Pure Go (CGO_ENABLED=0). Each target is still built on its own kind of
+  # machine, so it can be smoke-tested there before it is packed. macOS Intel
+  # is built on Apple silicon and can only be checked for its architecture.
   build:
     needs: plan
     if: needs.plan.outputs.tag != ''
@@ -80,7 +80,7 @@ jobs:
       run:
         shell: ${{ matrix.pack == 'zip' && 'msys2 {0}' || 'bash' }}
     env:
-      CGO_ENABLED: "1"
+      CGO_ENABLED: "0"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -92,16 +92,15 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          install: mingw-w64-x86_64-gcc zip
+          install: zip
           path-type: inherit
       - name: Build
         run: |
           ext=""
           if [ "${{ matrix.pack }}" = zip ]; then ext=".exe"; fi
           ld="-s -w"
-          if [ "${{ matrix.static }}" = true ]; then ld="$ld -extldflags \"-static\""; fi
           if [ -n "${{ matrix.cross }}" ]; then
-            export GOARCH=${{ matrix.cross }} CC="clang -arch x86_64"
+            export GOARCH=${{ matrix.cross }}
           fi
           mkdir pkg
           for c in bootstrapping bst; do

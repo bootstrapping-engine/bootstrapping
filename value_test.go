@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 // TestAffinityMatchesSQLite stores seed-style values in columns of every
@@ -22,7 +22,7 @@ import (
 // gives exactly what SQLite stored. If they differed, a plan would see a
 // change that isn't one, or miss one that is.
 func TestAffinityMatchesSQLite(t *testing.T) {
-	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "aff.db"))
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "aff.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

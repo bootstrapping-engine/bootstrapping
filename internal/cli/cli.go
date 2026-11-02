@@ -17,8 +17,8 @@ import (
 	"strings"
 
 	bs "github.com/bootstrapping-engine/bootstrapping"
-	_ "github.com/lib/pq"           // the PostgreSQL driver the command ships with
-	_ "github.com/mattn/go-sqlite3" // the SQLite driver the command ships with
+	_ "github.com/lib/pq"  // the PostgreSQL driver the command ships with
+	_ "modernc.org/sqlite" // the SQLite driver the command ships with (pure Go)
 )
 
 // Exit codes.
@@ -184,7 +184,7 @@ func (c *command) open() (*sql.DB, error) {
 	if _, err := os.Stat(c.dbPath); err != nil {
 		return nil, fmt.Errorf("no database at %s", c.dbPath)
 	}
-	return sql.Open("sqlite3", dsn(c.dbPath))
+	return sql.Open("sqlite", dsn(c.dbPath))
 }
 
 // isPostgresURL reports whether -db names a PostgreSQL server rather than a

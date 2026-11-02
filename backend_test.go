@@ -56,7 +56,7 @@ var (
 func (b backend) open(t testing.TB) *sql.DB {
 	t.Helper()
 	if !b.pg {
-		db, err := sql.Open("sqlite3", "file:"+filepath.Join(t.TempDir(), "t.db")+"?_foreign_keys=1&_busy_timeout=30000")
+		db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "t.db")+"?_foreign_keys=1&_busy_timeout=30000")
 		if err != nil {
 			t.Fatal(err)
 		}
