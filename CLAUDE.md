@@ -81,6 +81,61 @@ reference data drift, how it was tested, the name, the 0.2 release, and
 four case studies tagged "case studies", one per example program. Images are drawn
 into static/images. When a recording changes a number, update the site too.
 
-## Next
+## In progress: Bootstrapping 0.3 (softdev-plan item 29, approved by YK 2026-11-02)
 
-Nothing is agreed yet after 0.2.0. Ask the owner before starting anything.
+What and why: most Rails, Laravel and Django apps with reference data run on
+MySQL or MariaDB, which Bootstrapping can't touch; `plan -markdown` exists but
+nothing posts it on a pull request; and a referenced row can only be named by
+one column, while join tables are often keyed on two (region plus code).
+
+Design decisions:
+- Phase A, MySQL 8.0+ and MariaDB 10.6+ as a third dialect. Detected after
+  the PostgreSQL and SQLite probes. Each plan or apply runs on one session with
+  fixed settings, restored afterwards: sql_mode
+  `ANSI_QUOTES,STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_VALUE_ON_ZERO,NO_BACKSLASH_ESCAPES`
+  (so the package's double-quoted names work) and time_zone `+00:00`.
+  An apply takes `GET_LOCK` on a name built from the database, then one
+  REPEATABLE READ transaction. Values are compared as the text the server
+  prints (`CAST(col AS CHAR)`, HEX for binary types), like PostgreSQL;
+  integer, float and binary columns become Integer, Real and Blob Values
+  (BIGINT UNSIGNED stays text). Seed values are converted by the server: they
+  are inserted, in strict mode, into a temporary table with the column's own
+  type, character set and collation, and read back, so a value that doesn't
+  fit is reported by name and nothing is ever stored shortened. The ledger
+  gets MySQL DDL (no TEXT keys: table names VARCHAR(64), row keys
+  VARBINARY(2816), binary collations) and is created before the transaction,
+  since DDL commits implicitly there. The ledger's `key` column is quoted
+  everywhere (a reserved word in MySQL). Upserts use ON DUPLICATE KEY UPDATE.
+  A referenced table needs a one-column primary key. Collations that ignore
+  case or trailing spaces are documented: keys must match exactly.
+  The library still imports no driver; the commands and tests use
+  go-sql-driver/mysql. CI runs the every-backend tests on MySQL 8.4 and
+  MariaDB 11 service containers (`BS_MYSQL`).
+- Phase B1, the Action: `action.yml` (composite) downloads the release
+  binary for the runner, runs `bootstrapping plan -markdown` against the
+  database and seeds it's given, posts or updates one pull request comment
+  (found by a hidden marker), and fails the step when the plan has
+  conflicts. Tested by a workflow on a real pull-request-like run with a
+  SQLite file.
+- Phase B2, composite references: `[refs] role_id = "roles.(region, code)"`
+  names the referenced row by several columns; the seed gives an array
+  (`role_id = ["eu", "editor"]`, in CSV the cell is the values joined by
+  `|`). Stored ids are unchanged. The ledger remembers the tuple with a new
+  encoding (`k:` + JSON list of value encodings); existing encodings keep
+  their meaning. Everything a single-column reference does (self references,
+  renames followed, rows protected from deletion) works the same.
+- Upkeep: pure-Go SQLite (modernc.org/sqlite v1.60.1) for the commands and
+  tests, so builds need no C compiler; go.mod to 1.26 and the Go 1.24 CI job
+  dropped; CLAUDE.md "after 0.2.1".
+- Version 0.3.0.
+
+Steps:
+1. [ ] Upkeep: modernc SQLite, go 1.26, CI without the 1.24 job and cgo.
+2. [ ] Phase A: MySQL/MariaDB dialect, CI jobs, tests.
+3. [ ] Phase B2: composite references, tests.
+4. [ ] Phase B1: the Action and its test workflow.
+5. [ ] Docs (README, SEEDS, REFERENCE, MERGE where it applies).
+6. [ ] Independent review (at most two rounds), fixes, fresh test/results.
+7. [ ] 0.3.0 released by the workflow, downloads checked.
+8. [ ] bootstrapping.org post with its own SVG, pages; softdevstudio.com
+   note; softdev-plan log row.
