@@ -28,6 +28,10 @@ inputs:
     description: The pull request to comment on. Empty means the one the event is for; a push event has none, so nothing is posted.
     required: false
     default: ""
+  comment-author:
+    description: The account the token posts as, whose comment is updated on the next run. The default token posts as github-actions[bot]; set this when github-token is another account's.
+    required: false
+    default: github-actions[bot]
   github-token:
     description: Token for the comment. The default token can comment on pull requests from the same repository; from a fork it can't, and the step only warns.
     required: false
@@ -99,21 +103,26 @@ runs:
         rm -rf "$dir"
         mkdir -p "$dir"
         cd "$dir"
-        base() {
-          if [ "$1" = latest ]; then echo "https://github.com/bootstrapping-engine/bootstrapping/releases/latest/download"
-          else echo "https://github.com/bootstrapping-engine/bootstrapping/releases/download/$1"; fi
+        # latest is resolved to one tag first, so the archive and SHA256SUMS
+        # come from the same release even if one is published meanwhile.
+        resolve() {
+          if [ "$1" != latest ]; then echo "$1"; return; fi
+          curl -fsSLI --retry 3 -o /dev/null -w '%{url_effective}' https://github.com/bootstrapping-engine/bootstrapping/releases/latest | sed 's#.*/tag/##'
         }
-        if ! curl -fsSL --retry 3 -o "$name" "$(base "$BS_VERSION")/$name"; then
+        get() { curl -fsSL --retry 3 -o "$2" "https://github.com/bootstrapping-engine/bootstrapping/releases/download/$1/$2"; }
+        tag=$(resolve "$BS_VERSION") || tag=""
+        if [ -n "$tag" ] && get "$tag" "$name"; then :
+        elif [ -n "$own" ] && [ "$BS_VERSION" = "$own" ]; then
           # A copy of the action from main can name a version not published yet.
-          if [ -n "$own" ]; then
-            echo "::notice::$BS_VERSION isn't published; using the latest release"
-            BS_VERSION=latest
-            curl -fsSL --retry 3 -o "$name" "$(base latest)/$name" || { echo "::error::could not download $name"; exit 1; }
-          else
-            echo "::error::could not download $(base "$BS_VERSION")/$name"; exit 1
-          fi
+          echo "::notice::$BS_VERSION isn't published; using the latest release"
+          BS_VERSION=latest
+          tag=$(resolve latest) || tag=""
+          [ -n "$tag" ] && get "$tag" "$name" || { echo "::error::could not download the latest $name"; exit 1; }
+        else
+          echo "::error::could not download $name of $BS_VERSION"; exit 1
         fi
-        curl -fsSL --retry 3 -o SHA256SUMS "$(base "$BS_VERSION")/SHA256SUMS" || { echo "::error::could not download SHA256SUMS"; exit 1; }
+        if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "::error::latest resolved to $tag, not a release tag"; exit 1; fi
+        get "$tag" SHA256SUMS || { echo "::error::could not download SHA256SUMS of $tag"; exit 1; }
         want=$(awk -v n="$name" '$2==n || $2=="*"n {print $1}' SHA256SUMS)
         if command -v sha256sum >/dev/null; then got=$(sha256sum "$name" | cut -d' ' -f1); else got=$(shasum -a 256 "$name" | cut -d' ' -f1); fi
         if [ -z "$want" ] || [ "$want" != "$got" ]; then echo "::error::$name does not match SHA256SUMS"; exit 1; fi
@@ -143,6 +152,9 @@ runs:
             echo "exit-code=1" >> "$GITHUB_OUTPUT"; echo "result=error" >> "$GITHUB_OUTPUT"; exit 0 ;;
           esac
         done
+        # A URL with a password is masked in the log even when it wasn't
+        # passed from a secret.
+        case "$IN_DB" in *@*) echo "::add-mask::$IN_DB" ;; esac
         out="$RUNNER_TEMP/bootstrapping-plan-$GITHUB_ACTION.md"
         err="$RUNNER_TEMP/bootstrapping-plan-$GITHUB_ACTION.err"
         echo "plan=$out" >> "$GITHUB_OUTPUT"
@@ -157,7 +169,11 @@ runs:
         echo "result=$result" >> "$GITHUB_OUTPUT"
         if [ "$result" = error ]; then
           # The error, never the database URL, goes into the comment.
-          { echo "**Bootstrapping couldn't make the plan** for \`$IN_SEEDS\`:"; echo; echo '```'; head -c 4000 "$err"; echo; echo '```'; } > "$out"
+          # The command keeps the URL out of its errors; this is a second
+          # guard, since the comment can be public.
+          msg=$(head -c 4000 "$err")
+          if [ -n "$IN_DB" ]; then msg=${msg//"$IN_DB"/the database}; fi
+          { echo "**Bootstrapping couldn't make the plan** for \`$IN_SEEDS\`:"; echo; echo '```'; printf '%s\n' "$msg"; echo '```'; } > "$out"
         fi
         if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then cat "$out" >> "$GITHUB_STEP_SUMMARY"; fi
         exit 0
@@ -168,17 +184,24 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
+        AUTHOR: ${{ inputs.comment-author }}
         PR: ${{ inputs.pull-request || github.event.pull_request.number }}
         PLAN: ${{ steps.plan.outputs.plan }}
         IN_SEEDS: ${{ inputs.seeds }}
       run: |
         set -uo pipefail
         # One comment per seed folder, found again by a marker it carries.
-        marker="<!-- bootstrapping-plan seeds=$(printf '%s' "$IN_SEEDS" | sed 's/--/-/g') -->"
+        marker="<!-- bootstrapping-plan seeds=$(printf '%s' "$IN_SEEDS" | tr -s '-' | sed 's/-*>/>/g') -->"
         body="$RUNNER_TEMP/bootstrapping-comment-$GITHUB_ACTION.md"
         { echo "$marker"; cat "$PLAN"; } > "$body"
         api="repos/$GITHUB_REPOSITORY/issues"
-        id=$(gh api --paginate "$api/$PR/comments" 2>/dev/null | jq -r --arg m "$marker" '.[] | select(.body | startswith($m)) | .id' | head -n 1)
+        # Only a comment the same author posted counts, so nobody else can
+        # claim the marker and hide the plan.
+        if ! list=$(gh api --paginate "$api/$PR/comments"); then
+          echo "::warning::couldn't read the pull request's comments; the plan is in the job summary"
+          exit 0
+        fi
+        id=$(printf '%s' "$list" | jq -r --arg m "$marker" --arg a "$AUTHOR" '.[] | select(.user.login == $a and (.body | startswith($m))) | .id' | head -n 1)
         if [ -n "$id" ]; then
           url=$(gh api -X PATCH "$api/comments/$id" -F "body=@$body" --jq .html_url)
         else

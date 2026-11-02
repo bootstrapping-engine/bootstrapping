@@ -354,3 +354,18 @@ func TestMySQLRetireColumnType(t *testing.T) {
 		t.Fatalf("retired on the apply's day: %s", got)
 	}
 }
+
+// A table without transactions can't be applied to all or nothing, so it's
+// refused before anything is written.
+func TestMySQLNonTransactionalTable(t *testing.T) {
+	b := myBackend(t)
+	db := b.open(t)
+	mustExec(t, db, `CREATE TABLE r (code VARCHAR(10) PRIMARY KEY, n INTEGER) ENGINE = MyISAM`)
+	set := setFrom(t, map[string]string{"r.toml": "table = \"r\"\nkey = \"code\"\n[[row]]\ncode = \"a\"\nn = 1\n"})
+	if _, err := bs.Apply(context.Background(), db, set, nil); err == nil || !strings.Contains(err.Error(), "has no transactions") {
+		t.Fatalf("got %v", err)
+	}
+	if got := query1(t, db, "SELECT count(*) FROM r"); got != "0" {
+		t.Fatalf("rows: %s", got)
+	}
+}

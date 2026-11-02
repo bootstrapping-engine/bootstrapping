@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -140,7 +141,7 @@ func (d *dbConn) beginMySQL(ctx context.Context, write bool) (func(bool) error, 
 		if err := d.q.QueryRowContext(ctx, "SELECT GET_LOCK("+mysqlLockName+", 31536000)").Scan(&got); err != nil || got.Int64 != 1 {
 			restore()
 			if err == nil {
-				err = fmt.Errorf("GET_LOCK returned %v", got)
+				err = errors.New("timed out")
 			}
 			return nil, fmt.Errorf("waiting for another apply: %w", err)
 		}
@@ -263,6 +264,19 @@ func readTableInfoMySQL(ctx context.Context, q *dbConn, table string) (*tableInf
 	}
 	if len(ti.cols) == 0 {
 		return nil, fmt.Errorf("table %q doesn't exist in the database (create it with your migrations first)", table)
+	}
+	// An apply is all or nothing only on a transactional engine; MyISAM,
+	// MEMORY and the like keep what was written before a failure. A view
+	// has no engine and writes through to its table's.
+	var engine, transactional sql.NullString
+	err = q.QueryRowContext(ctx, `SELECT t.ENGINE, e.TRANSACTIONS FROM information_schema.TABLES t
+		LEFT JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE
+		WHERE t.TABLE_SCHEMA = DATABASE() AND t.TABLE_NAME = ?`, table).Scan(&engine, &transactional)
+	if err != nil {
+		return nil, err
+	}
+	if engine.Valid && transactional.String != "YES" {
+		return nil, fmt.Errorf("table %q uses the %s engine, which has no transactions; Bootstrapping needs InnoDB (or another transactional engine) so an apply is all or nothing", table, engine.String)
 	}
 	if len(pks) == 1 {
 		ti.idCol = pks[0].name // no rowid: a referenced table needs a one-column primary key

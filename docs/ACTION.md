@@ -52,6 +52,7 @@ database.
 | `version` | the action's own | a release tag such as `v0.3.0`, or `latest`. Empty runs the release the action was pinned to (`@v0.3.0` runs 0.3.0) |
 | `pull-request` | the event's | the pull request to comment on; a push has none, so nothing is posted |
 | `github-token` | `github.token` | the token that posts the comment |
+| `comment-author` | `github-actions[bot]` | the account that token posts as; only that account's comment is updated |
 | `bootstrapping-path` | | a bootstrapping binary to run instead of downloading one |
 
 `comment` and `fail-on-conflict` take exactly `true` or `false`; anything
@@ -78,7 +79,13 @@ get a comment each and a new push edits the comment instead of adding
 another. When planning fails, the comment and the summary show the error
 (never the database URL). A pull request from a fork gets a read-only
 token; the comment step then only warns, and the plan is still in the job
-summary.
+summary. Such a run gets no secrets either, so a workflow that plans against
+a staging URL from a secret can't plan on pull requests from forks; one that
+builds a scratch database, as in the example, can. Only a comment posted by
+`comment-author` is updated, so a marker someone else copies into their own
+comment changes nothing. The command keeps the database URL out of its error
+messages, and the action removes it again before posting, so an error never
+shows a password.
 
 The action is tested by
 [.github/workflows/action-test.yml](../.github/workflows/action-test.yml)

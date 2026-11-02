@@ -177,7 +177,8 @@ role_id = ["eu", "editor"]
 The row gives one value per column, in the order the reference lists them.
 In a CSV file the cell joins them with `|`: `eu|editor`, so the values
 themselves can't contain a `|` there (write such rows in TOML). An empty
-cell is NULL, no role at all. The columns together must tell the
+cell (or the file's `null` marker) is NULL, no role at all; the null
+marker inside a joined cell is taken as text, not as an empty part. The columns together must tell the
 referenced table's rows apart. Plans show the value as `("eu", "editor")`,
 and keys that hold one as `eu|editor`. Everything a reference by one
 column does works the same: skips, renames followed, rows kept while

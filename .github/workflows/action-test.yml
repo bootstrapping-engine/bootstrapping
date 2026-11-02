@@ -62,6 +62,13 @@ jobs:
           database: ${{ env.DB }}
           seeds: examples/permissions/seeds/v1
           bootstrapping-path: ${{ env.BS_BIN }}
+      - name: A published release through the download path
+        id: published
+        uses: ./
+        with:
+          database: ${{ env.DB }}
+          seeds: examples/permissions/seeds/v1
+          version: v0.2.1
       - name: Apply v1
         run: '"$BS_BIN" apply -db "$DB" -seeds examples/permissions/seeds/v1'
       - name: In step after the apply
@@ -105,6 +112,14 @@ jobs:
           database: ${{ runner.temp }}/no-such.db
           seeds: examples/permissions/seeds/v1
           bootstrapping-path: ${{ env.BS_BIN }}
+      - name: A server that can't be reached keeps its password out of the plan
+        id: unreachable
+        continue-on-error: true
+        uses: ./
+        with:
+          database: mysql://app:hunter22secret@127.0.0.1:1/app?timeout=2s
+          seeds: examples/permissions/seeds/v1
+          bootstrapping-path: ${{ env.BS_BIN }}
       - name: A bad switch fails the step
         id: badswitch
         continue-on-error: true
@@ -118,6 +133,7 @@ jobs:
         env:
           BLOCKED_PLAN: ${{ steps.blocked.outputs.plan }}
           BROKEN_PLAN: ${{ steps.broken.outputs.plan }}
+          UNREACHABLE_PLAN: ${{ steps.unreachable.outputs.plan }}
         run: |
           set -u
           bad=0
@@ -128,6 +144,10 @@ jobs:
           want "blocked, failing" "${{ steps.blockfail.outputs.exit-code }} ${{ steps.blockfail.outcome }}" "3 failure"
           want "broken" "${{ steps.broken.outputs.result }} ${{ steps.broken.outcome }}" "error failure"
           want "bad switch" "${{ steps.badswitch.outputs.result }} ${{ steps.badswitch.outcome }}" "error failure"
+          want "published" "${{ steps.published.outputs.exit-code }} ${{ steps.published.outputs.version }}" "2 v0.2.1"
+          want "unreachable" "${{ steps.unreachable.outputs.result }} ${{ steps.unreachable.outcome }}" "error failure"
+          if grep -q hunter22secret "$UNREACHABLE_PLAN" "$GITHUB_STEP_SUMMARY"; then echo "::error::the password is in the plan"; bad=1; fi
+          grep -q "couldn't make the plan" "$UNREACHABLE_PLAN" || { echo "::error::no error in the plan file"; bad=1; }
           want "version" "${{ steps.fresh.outputs.version }}" "local"
           want "no comment on a push" "${{ steps.fresh.outputs.comment-url }}" ""
           grep -qi 'conflict' "$BLOCKED_PLAN" || { echo "::error::the blocked plan doesn't name the conflict"; cat "$BLOCKED_PLAN"; bad=1; }

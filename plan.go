@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -331,7 +332,7 @@ func (tw *tableWork) natural(ctx context.Context, q *dbConn, x any, col string) 
 		}
 		parts := make([]Value, len(xs))
 		for i, part := range xs {
-			v, err := convertSeed(ctx, q, part, rm.target.cols[rm.ref.Columns[i]], nil)
+			v, err := convertSeed(ctx, q, part, rm.target.cols[rm.ref.Columns[i]], tw.cast[partCache(col, i)])
 			if err != nil {
 				return NullValue, err
 			}
@@ -344,6 +345,10 @@ func (tw *tableWork) natural(ctx context.Context, q *dbConn, x any, col string) 
 	}
 	return convertSeed(ctx, q, x, tw.ci[col], tw.cast[col])
 }
+
+// partCache is where prefetchCasts keeps the converted values of one part
+// of a reference by several columns.
+func partCache(col string, i int) string { return col + "\x00" + strconv.Itoa(i) }
 
 // convertSeed converts one seed value to what a column stores; cache holds
 // values the server already converted.
@@ -375,7 +380,25 @@ func (tw *tableWork) prefetchCasts(ctx context.Context, q *dbConn) {
 	t := tw.t
 	for _, c := range t.Columns {
 		if rm := tw.refs[c.Name]; rm != nil && len(rm.ref.Columns) > 1 {
-			continue // converted part by part, in natural
+			// A reference by several columns: each part as the column of the
+			// referenced table it matches.
+			for i, tc := range rm.ref.Columns {
+				ci := rm.target.cols[tc]
+				seen := map[string]bool{}
+				var texts []string
+				for _, sr := range t.Rows {
+					if xs, ok := sr.Values[c.Name].([]any); ok && i < len(xs) {
+						if s, err := q.seedText(xs[i], ci); err == nil && !seen[s] {
+							seen[s] = true
+							texts = append(texts, s)
+						}
+					}
+				}
+				if m, err := q.cast(ctx, ci, texts); err == nil {
+					tw.cast[partCache(c.Name, i)] = m
+				}
+			}
+			continue
 		}
 		seen := map[string]bool{}
 		var texts []string

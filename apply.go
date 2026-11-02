@@ -54,11 +54,14 @@ var ErrBlocked = errors.New("conflicts block the apply; settle them with on_conf
 //
 // Apply uses one connection from db. On SQLite it holds the write lock for
 // the whole transaction (BEGIN IMMEDIATE); on PostgreSQL it takes an
-// advisory lock, then plans and writes in one REPEATABLE READ transaction.
-// Either way two applies never interleave: the second waits for the first
-// and then finds nothing left to do. On PostgreSQL, an admin editing a row
-// the apply is about to write makes the apply fail with a serialization
-// error, and nothing is written; applying again plans with the edit.
+// advisory lock and on MySQL or MariaDB a named lock (GET_LOCK), then plans
+// and writes in one REPEATABLE READ transaction. Either way two applies
+// never interleave: the second waits for the first and then finds nothing
+// left to do. On PostgreSQL, an admin editing a row the apply is about to
+// write makes the apply fail with a serialization error, and nothing is
+// written; applying again plans with the edit. On MySQL the apply reads
+// the managed tables with shared locks, so such an edit waits until the
+// apply commits and lands after it.
 func Apply(ctx context.Context, db *sql.DB, set *Set, opts *Options) (*Plan, error) {
 	if opts == nil {
 		opts = &Options{}

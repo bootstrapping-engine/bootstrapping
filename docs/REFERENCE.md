@@ -263,7 +263,12 @@ takes any `*sql.DB` opened with that driver.
   back the smaller transaction, usually the admin's statement, which fails
   with an error and can be run again; nothing is written over silently.
 - **Preview** and `plan` take no lock. They need to create temporary tables
-  (the `CREATE TEMPORARY TABLES` privilege).
+  (the `CREATE TEMPORARY TABLES` privilege). On MySQL with
+  `enforce_gtid_consistency` (common on managed MySQL), temporary tables
+  inside a transaction need `binlog_format=ROW`, MySQL 8's default.
+- **Engines**: managed and referenced tables must be on a transactional
+  engine (InnoDB). A MyISAM or MEMORY table is refused before anything is
+  written, since it would keep half an apply after a failure.
 - **The ledger** tables are created before the apply's transaction, since
   MySQL commits on any `CREATE TABLE`, and only once a plan shows the apply
   will write. A row key may be up to 2,816 bytes.
@@ -277,7 +282,8 @@ takes any `*sql.DB` opened with that driver.
   keep keys distinct. Floating-point key columns aren't supported.
 - **References**: the table a reference points at needs a one-column
   primary key. A row that refers to itself has that reference cleared
-  before it is deleted, since InnoDB won't delete it otherwise.
+  before it is deleted, since InnoDB won't delete it otherwise; if that
+  column is NOT NULL, the delete stops with the server's error.
 - **Retire columns** must be able to hold the time of the apply: text,
   `DATE`, `DATETIME` or `TIMESTAMP` (written in UTC).
 
@@ -295,7 +301,9 @@ schema of the search path), created on the first apply:
 
 Values are kept losslessly as `n` (NULL), `i:42`, `r:1.5`, `t:text` or
 `b:base64`, and the value of a reference by several columns as `k:` and
-the JSON list of its parts' encodings (`k:["t:eu","t:editor"]`). The ledger is written in the same transaction as the data, so
+the JSON list of its parts' encodings (`k:["t:eu","t:editor"]`). 0.2
+can't read a ledger holding `k:` values, so once a seed uses a reference
+by several columns, stay on 0.3 or later. The ledger is written in the same transaction as the data, so
 the two never disagree.
 
 Deleting the ledger tables makes every row look unmanaged; the next apply

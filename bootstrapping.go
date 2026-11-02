@@ -16,8 +16,9 @@
 //	plan, err := bootstrapping.Preview(ctx, db, set, nil)
 //	plan, err = bootstrapping.Apply(ctx, db, set, nil)
 //
-// The package works with any database/sql driver for SQLite or PostgreSQL
-// (12 or later) and tells the two apart on its own. It needs the
+// The package works with any database/sql driver for SQLite, PostgreSQL
+// (12 or later), MySQL (8.0 or later) or MariaDB (10.6 or later) and tells
+// them apart on its own. It needs the
 // application's tables to exist already; schema migrations are another
 // tool's job.
 package bootstrapping

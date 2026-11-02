@@ -433,3 +433,32 @@ func TestMySQLURL(t *testing.T) {
 		}
 	}
 }
+
+// A database URL's password never shows in an error: the GitHub Action posts
+// errors in pull request comments.
+func TestErrorsHideTheDatabaseURL(t *testing.T) {
+	seeds := t.TempDir()
+	for _, c := range []struct{ db, secret string }{
+		{"mysql://root:s3cr%zzet@db.example:3306/app", "s3cr"},
+		{"postgres://app:pa%zzss1@db.example/app", "pa%zzss1"},
+		{"postgres://app:hunter22@127.0.0.1:1/app?sslmode=disable&connect_timeout=2", "hunter22"},
+		{"mysql://app:hunter22@127.0.0.1:1/app?timeout=2s", "hunter22"},
+		{"mysql+tls://app:hunter22@db.example/app", "hunter22"},
+		{"MySQL://app:hunter22@db.example/app", "hunter22"},
+		{"jdbc:mysql://app:hunter22@db.example/app", "hunter22"},
+	} {
+		for _, json := range []bool{false, true} {
+			args := []string{"plan", "-db", c.db, "-seeds", seeds}
+			if json {
+				args = append(args, "-json")
+			}
+			code, out, errs := run(t, args...)
+			if code != ExitError {
+				t.Errorf("%s: exit %d", c.db, code)
+			}
+			if strings.Contains(out+errs, c.secret) || strings.Contains(out+errs, c.db) {
+				t.Errorf("%s: the error shows it: %s%s", c.db, out, errs)
+			}
+		}
+	}
+}

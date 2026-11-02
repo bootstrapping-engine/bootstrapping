@@ -80,7 +80,7 @@ func Main(name string, args []string, stdout, stderr io.Writer) int {
 	c := &command{name: name, cmd: cmd, stdout: stdout, stderr: stderr}
 	fs := flag.NewFlagSet(name+" "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&c.dbPath, "db", os.Getenv("BOOTSTRAPPING_DB"), "the SQLite file or PostgreSQL URL")
+	fs.StringVar(&c.dbPath, "db", os.Getenv("BOOTSTRAPPING_DB"), "the SQLite file, or a postgres:// or mysql:// URL")
 	seeds := os.Getenv("BOOTSTRAPPING_SEEDS")
 	if seeds == "" {
 		seeds = "seeds"
@@ -135,6 +135,7 @@ func Main(name string, args []string, stdout, stderr io.Writer) int {
 	}
 	code, err := c.run(context.Background())
 	if err != nil {
+		err = errors.New(c.redact(err.Error()))
 		if c.json {
 			json.NewEncoder(stdout).Encode(map[string]string{"error": err.Error()})
 		} else {
@@ -196,10 +197,48 @@ func (c *command) open() (*sql.DB, error) {
 		}
 		return sql.OpenDB(conn), nil
 	}
+	if strings.Contains(c.dbPath, "://") {
+		return nil, errors.New("-db names no SQLite file and isn't a postgres://, postgresql://, mysql:// or mariadb:// URL")
+	}
 	if _, err := os.Stat(c.dbPath); err != nil {
 		return nil, fmt.Errorf("no database at %s", c.dbPath)
 	}
 	return sql.Open("sqlite", dsn(c.dbPath))
+}
+
+// redact takes the database URL and its password out of an error message:
+// errors go to logs and, through the GitHub Action, into pull request
+// comments. Drivers quote the URL when they can't parse it.
+func (c *command) redact(msg string) string {
+	if !strings.Contains(c.dbPath, "://") && !strings.Contains(c.dbPath, "@") {
+		return msg // a SQLite file's path
+	}
+	shown := "the -db URL"
+	var secrets []string
+	if u, err := url.Parse(c.dbPath); err == nil && u.User != nil {
+		shown = u.Redacted()
+		if p, ok := u.User.Password(); ok && p != "" {
+			secrets = append(secrets, p, url.QueryEscape(p), url.PathEscape(p))
+		}
+	}
+	if at := strings.LastIndex(c.dbPath, "@"); at > 0 {
+		// Whatever follows the scheme's // and a colon, up to the last @,
+		// may be a password, whether or not the URL parses.
+		userinfo := c.dbPath[:at]
+		if i := strings.LastIndex(userinfo, "://"); i >= 0 {
+			userinfo = userinfo[i+3:]
+		}
+		if _, p, ok := strings.Cut(userinfo, ":"); ok && p != "" {
+			secrets = append(secrets, p)
+		}
+	}
+	msg = strings.ReplaceAll(msg, c.dbPath, shown)
+	for _, p := range secrets {
+		if len(p) >= 3 {
+			msg = strings.ReplaceAll(msg, p, "xxxxx")
+		}
+	}
+	return msg
 }
 
 // isPostgresURL reports whether -db names a PostgreSQL server rather than a
@@ -219,7 +258,8 @@ func isMySQLURL(s string) bool {
 func mysqlConfig(s string) (*mysql.Config, error) {
 	u, err := url.Parse(s)
 	if err != nil {
-		return nil, fmt.Errorf("reading the database URL: %w", err)
+		// url.Parse quotes the whole URL, password included.
+		return nil, errors.New("the database URL can't be read (a password with % or another special character has to be percent-encoded)")
 	}
 	db := strings.TrimPrefix(u.Path, "/")
 	if db == "" || strings.Contains(db, "/") {
@@ -253,7 +293,7 @@ func mysqlConfig(s string) (*mysql.Config, error) {
 		}
 		parsed, err := mysql.ParseDSN(base + sep + q.Encode())
 		if err != nil {
-			return nil, fmt.Errorf("reading the database URL: %w", err)
+			return nil, errors.New("the database URL's parameters can't be read")
 		}
 		cfg = parsed
 	}
