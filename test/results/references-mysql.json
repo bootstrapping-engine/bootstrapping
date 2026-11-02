@@ -1,0 +1,13 @@
+{
+  "histories": 600,
+  "applies": 6000,
+  "blocked_applies": 764,
+  "renames": 1097,
+  "renamed_ids_checked": 1097,
+  "edited_notes_checked": 2078,
+  "edited_notes_kept": 1819,
+  "skipped_for_missing_rows": 3818,
+  "deletes_held_while_referred_to": 2016,
+  "rows_deleted": 1881,
+  "foreign_key_checks": 6000
+}

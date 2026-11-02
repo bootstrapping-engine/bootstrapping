@@ -1,10 +1,15 @@
 # Every test with the race detector, at CI size, on SQLite
-# recorded 2026-10-19 03:38 UTC at b90f099, Bootstrapping 0.2.0, go1.24.7 linux/amd64
-# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.80GHz, 2 CPUs
-# command: go test -race -count=1 ./...
+# recorded 2026-11-02 15:26 UTC at 442c311, Bootstrapping 0.2.1, go1.26.10 linux/amd64
+# Linux 7.0.0-1017-azure, AMD EPYC 7763 64-Core Processor, 4 CPUs
+# command: CGO_ENABLED=1 go test -race -count=1 ./...
 
-ok  	github.com/bootstrapping-engine/bootstrapping	108.377s
+ok  	github.com/bootstrapping-engine/bootstrapping	400.455s
 ?   	github.com/bootstrapping-engine/bootstrapping/cmd/bootstrapping	[no test files]
 ?   	github.com/bootstrapping-engine/bootstrapping/cmd/bst	[no test files]
-ok  	github.com/bootstrapping-engine/bootstrapping/examples/permissions	1.100s
-ok  	github.com/bootstrapping-engine/bootstrapping/internal/cli	1.262s
+ok  	github.com/bootstrapping-engine/bootstrapping/examples/countries	1.166s
+?   	github.com/bootstrapping-engine/bootstrapping/examples/internal/story	[no test files]
+ok  	github.com/bootstrapping-engine/bootstrapping/examples/permissions	1.288s
+ok  	github.com/bootstrapping-engine/bootstrapping/examples/plans	1.130s
+ok  	github.com/bootstrapping-engine/bootstrapping/examples/templates	1.080s
+ok  	github.com/bootstrapping-engine/bootstrapping/examples/workflow	1.089s
+ok  	github.com/bootstrapping-engine/bootstrapping/internal/cli	1.745s

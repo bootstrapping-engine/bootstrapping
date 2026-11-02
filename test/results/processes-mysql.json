@@ -1,0 +1,8 @@
+{
+  "rounds": 60,
+  "processes_per_round": 8,
+  "applies_started": 480,
+  "applies_that_wrote": 60,
+  "applies_that_found_nothing_to_do": 420,
+  "rounds_matching_a_single_apply": 60
+}
