@@ -36,7 +36,7 @@ func (f *fixture) agree(files map[string]string, take ...bs.Resolution) *bs.Plan
 	if actions(pre) != actions(p) {
 		f.t.Fatalf("preview and apply differ:\npreview %s\n  apply %s", actions(pre), actions(p))
 	}
-	if !isPG(f.db) { // PostgreSQL checks foreign keys on every statement
+	if isSQLite(f.db) { // PostgreSQL and MySQL check foreign keys on every statement
 		if n := f.one("SELECT count(*) FROM pragma_foreign_key_check"); n != "0" {
 			f.t.Fatalf("%s foreign key violations", n)
 		}

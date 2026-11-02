@@ -101,7 +101,7 @@ func runHistory(t *testing.T, b backend, seed int64, st *promiseStats) {
 	rng := rand.New(rand.NewSource(seed))
 	db := b.open(t)
 	defer db.Close()
-	if !b.pg {
+	if b.sqlite() {
 		mustExec(t, db, "PRAGMA synchronous = OFF")
 	}
 	mustExec(t, db, b.ddl(promiseSchema))

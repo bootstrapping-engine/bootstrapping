@@ -315,17 +315,17 @@ func Preview(ctx context.Context, db *sql.DB, set *Set, opts *Options) (*Plan, e
 // natural converts a seed value to the value its column stores.
 func (tw *tableWork) natural(ctx context.Context, q *dbConn, x any, col string) (Value, error) {
 	ci := tw.ci[col]
-	if !q.pg {
+	if q.sqlite() {
 		return canonical(ctx, q, x, ci.aff)
 	}
-	s, err := pgSeedText(x, ci)
+	s, err := q.seedText(x, ci)
 	if err != nil {
 		return NullValue, err
 	}
 	if v, ok := tw.cast[col][s]; ok {
 		return v, nil
 	}
-	m, err := q.pgCast(ctx, ci, []string{s})
+	m, err := q.cast(ctx, ci, []string{s})
 	if err != nil {
 		return NullValue, err
 	}
@@ -341,7 +341,7 @@ func (tw *tableWork) prefetchCasts(ctx context.Context, q *dbConn) {
 		seen := map[string]bool{}
 		var texts []string
 		add := func(x any) {
-			if s, err := pgSeedText(x, tw.ci[c.Name]); err == nil && !seen[s] {
+			if s, err := q.seedText(x, tw.ci[c.Name]); err == nil && !seen[s] {
 				seen[s] = true
 				texts = append(texts, s)
 			}
@@ -354,7 +354,7 @@ func (tw *tableWork) prefetchCasts(ctx context.Context, q *dbConn) {
 				add(sr.RenamedFrom[i])
 			}
 		}
-		if m, err := q.pgCast(ctx, tw.ci[c.Name], texts); err == nil {
+		if m, err := q.cast(ctx, tw.ci[c.Name], texts); err == nil {
 			tw.cast[c.Name] = m
 		}
 	}
@@ -572,23 +572,23 @@ func loadTable(ctx context.Context, q *dbConn, t *Table, hasLedger bool, works m
 		if ci.notNull && !ci.hasDflt {
 			return nil, fmt.Errorf("%s: the retire column %q is NOT NULL with no default, so new rows couldn't be inserted; let it be NULL", t.File, t.RetireColumn)
 		}
-		if q.pg {
+		if !q.sqlite() {
 			// Retiring writes the time of the apply; the column has to take it.
-			if _, err := q.pgCast(ctx, ci, []string{"2026-01-02T03:04:05Z"}); err != nil {
+			if _, err := q.cast(ctx, ci, []string{q.retireText("2026-01-02T03:04:05Z", ci)}); err != nil {
 				return nil, fmt.Errorf("%s: the retire column %q is %s, which can't hold the time a row was retired; use a text, date or timestamp column", t.File, t.RetireColumn, ci.declared)
 			}
 		}
 	}
 	for name, ci := range info.cols {
 		// SQLite fills an INTEGER PRIMARY KEY itself, NOT NULL or not.
-		rowidAlias := !q.pg && ci.pk > 0 && info.idCol == name && strings.EqualFold(strings.TrimSpace(ci.declared), "INTEGER")
+		rowidAlias := q.sqlite() && ci.pk > 0 && info.idCol == name && strings.EqualFold(strings.TrimSpace(ci.declared), "INTEGER")
 		if ci.notNull && !ci.hasDflt && !rowidAlias && t.Column(name) == nil && name != t.RetireColumn {
 			return nil, fmt.Errorf("%s: column %q of %q is NOT NULL with no default, so the seed must set it", t.File, name, t.Name)
 		}
 	}
 
 	// The seed rows, converted the way the database would store them.
-	if q.pg {
+	if !q.sqlite() {
 		tw.prefetchCasts(ctx, q)
 	}
 	seedRows := map[string]*rowWork{}

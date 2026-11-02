@@ -1,0 +1,37 @@
+name: tidy
+
+# Started by hand (gh api -X POST repos/bootstrapping-engine/bootstrapping/actions/workflows/tidy.yml/dispatches -f ref=main):
+# runs go mod tidy on current Go and commits go.mod and go.sum when they
+# change. Build sessions can't reach the Go module proxy or checksum
+# database, so a new dependency is added in code and resolved here. The
+# commit is made with the workflow's token, which starts no other
+# workflow; the next push runs the tests.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tidy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+      - run: go mod tidy
+      - run: go build ./...
+      - name: Commit go.mod and go.sum
+        run: |
+          if git diff --quiet -- go.mod go.sum; then
+            echo "go.mod and go.sum are tidy"
+            exit 0
+          fi
+          git diff -- go.mod
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add go.mod go.sum
+          git commit -m "go mod tidy"
+          git push

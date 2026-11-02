@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/go-sql-driver/mysql v1.10.1
 	github.com/lib/pq v1.12.3
 	modernc.org/sqlite v1.60.1
 )

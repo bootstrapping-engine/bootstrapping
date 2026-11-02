@@ -36,8 +36,8 @@ func testCSVRows(t *testing.T, b backend) {
 
 	// Text from the CSV is stored the way the column's type stores it, and
 	// an empty cell is NULL.
-	if b.pg {
-		if got := f.one("SELECT population + 1 || ' ' || area * 2 FROM countries WHERE code = 'DE'"); got != "84000001 715177" {
+	if !b.sqlite() {
+		if got := f.one("SELECT CONCAT(population + 1, ' ', area * 2) FROM countries WHERE code = 'DE'"); got != "84000001 715177" {
 			t.Fatalf("DE: %s", got)
 		}
 		if got := f.one("SELECT count(*) FROM countries WHERE code = 'FR' AND area IS NULL AND note IS NULL"); got != "1" {
@@ -69,7 +69,7 @@ func testCSVRows(t *testing.T, b backend) {
 	}
 	expect(t, f.agree(toml), "")
 
-	if b.pg {
+	if !b.sqlite() {
 		return // the rest stores empty text in a REAL column, which only SQLite takes
 	}
 	// A change in the CSV, a rename, a dropped row and a custom delimiter

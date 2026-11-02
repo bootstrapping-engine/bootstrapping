@@ -72,6 +72,9 @@ func dump(t testing.TB, db *sql.DB) string {
 	if isPG(db) {
 		q = "SELECT tablename FROM pg_tables WHERE schemaname = current_schema() ORDER BY tablename"
 	}
+	if isMy(db) {
+		q = "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME"
+	}
 	rows, err := db.Query(q)
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +98,7 @@ func dump(t testing.TB, db *sql.DB) string {
 		// next one's new rows get other ids than a clean apply's would. The
 		// test tables' ids are left out there; everything else must match.
 		skip := -1
-		if isPG(db) && tbl == "items" {
+		if !isSQLite(db) && tbl == "items" {
 			for i, c := range cols {
 				if c == "id" {
 					skip = i

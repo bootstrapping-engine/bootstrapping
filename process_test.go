@@ -21,6 +21,7 @@ import (
 	"time"
 
 	bs "github.com/bootstrapping-engine/bootstrapping"
+	"github.com/go-sql-driver/mysql"
 )
 
 // These tests run applies in child processes: the test binary started
@@ -189,7 +190,7 @@ func testCrash(t *testing.T, b backend) {
 	prepare(start)
 	fresh := func(name string) string {
 		loc := newLoc(t, b, dir, name)
-		if b.pg {
+		if !b.sqlite() {
 			prepare(loc)
 		} else {
 			copyFile(t, start, loc)
@@ -211,7 +212,7 @@ func testCrash(t *testing.T, b backend) {
 
 	st := crashStats{Rows: rows, Statements: statements, ApplySeconds: took.Seconds()}
 	trials := 40 * scale()
-	if b.pg {
+	if !b.sqlite() {
 		trials = 10 * scale() // each trial builds its starting state again, which takes a few seconds
 	}
 	if testing.Short() {
@@ -261,7 +262,7 @@ func testCrash(t *testing.T, b backend) {
 		default:
 			t.Fatalf("trial %d: the database is neither as it was nor as an apply leaves it", i)
 		}
-		if !b.pg {
+		if b.sqlite() {
 			db := openLoc(t, path)
 			var ok string
 			if err := db.QueryRow("PRAGMA integrity_check").Scan(&ok); err != nil || ok != "ok" {
@@ -369,17 +370,31 @@ func testProcesses(t *testing.T, b backend) {
 }
 
 func openChild(loc string) (*sql.DB, error) {
+	if strings.HasPrefix(loc, "mysql://") {
+		u, err := url.Parse(loc)
+		if err != nil {
+			return nil, err
+		}
+		conn, err := mysql.NewConnector(myConfig(loc, strings.TrimPrefix(u.Path, "/")))
+		if err != nil {
+			return nil, err
+		}
+		return sql.OpenDB(conn), nil
+	}
 	if strings.Contains(loc, "://") {
 		return sql.Open("postgres", loc)
 	}
 	return sql.Open("sqlite", "file:"+loc+"?_busy_timeout=30000")
 }
 
-// A location is where a test database lives: a SQLite file, or a
-// PostgreSQL URL whose search_path is a schema of its own.
+// A location is where a test database lives: a SQLite file, a PostgreSQL
+// URL whose search_path is a schema of its own, or a MySQL database's URL.
 
 func newLoc(t *testing.T, b backend, dir, name string) string {
 	t.Helper()
+	if b.my {
+		return newMyDB(t)
+	}
 	if !b.pg {
 		return filepath.Join(dir, name+".db")
 	}
@@ -393,6 +408,9 @@ func openLoc(t *testing.T, loc string) *sql.DB {
 	t.Helper()
 	if !strings.Contains(loc, "://") {
 		return openPath(t, loc)
+	}
+	if strings.HasPrefix(loc, "mysql://") {
+		return openMy(t, loc)
 	}
 	db, err := sql.Open("postgres", loc)
 	if err != nil {
@@ -408,5 +426,9 @@ func dropLoc(t *testing.T, loc string) {
 		return
 	}
 	u, _ := url.Parse(loc)
+	if u.Scheme == "mysql" {
+		myAdmin.Exec("DROP DATABASE IF EXISTS " + strings.TrimPrefix(u.Path, "/"))
+		return
+	}
 	pgAdmin.Exec("DROP SCHEMA " + u.Query().Get("search_path") + " CASCADE")
 }

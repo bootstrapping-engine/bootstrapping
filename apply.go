@@ -72,6 +72,33 @@ func Apply(ctx context.Context, db *sql.DB, set *Set, opts *Options) (*Plan, err
 	if err != nil {
 		return nil, err
 	}
+	if q.my {
+		// DDL commits on MySQL, so the ledger is made before the transaction,
+		// once a plan without it shows the apply will write.
+		has, err := ledgerExists(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		if !has {
+			end, err := q.begin(ctx, true)
+			if err != nil {
+				return nil, err
+			}
+			p, err := buildPlan(ctx, q, set, opts)
+			end(false)
+			switch {
+			case err != nil:
+				return nil, err
+			case p.Blocked():
+				return p, ErrBlocked
+			case !p.Pending():
+				return p, nil
+			}
+			if err := createLedger(ctx, q); err != nil {
+				return nil, err
+			}
+		}
+	}
 	end, err := q.begin(ctx, true)
 	if err != nil {
 		return nil, err
@@ -88,8 +115,10 @@ func Apply(ctx context.Context, db *sql.DB, set *Set, opts *Options) (*Plan, err
 	if !p.Pending() {
 		return p, nil // in step already; don't record an empty run
 	}
-	if err := createLedger(ctx, q); err != nil {
-		return nil, err
+	if !q.my {
+		if err := createLedger(ctx, q); err != nil {
+			return nil, err
+		}
 	}
 	w := &writer{ctx: ctx, q: q, opts: opts, plan: p, at: opts.now().UTC().Format(time.RFC3339)}
 	if err := w.q.QueryRowContext(ctx, "SELECT coalesce(max(id), 0) + 1 FROM "+runsTable).Scan(&w.run); err != nil {
@@ -152,7 +181,7 @@ func (w *writer) write() error {
 	for _, tw := range tables {
 		for _, c := range tw.t.Columns {
 			if c.Ref != nil {
-				if _, err := w.q.ExecContext(w.ctx, "INSERT INTO "+refsTable+" (tbl, col, ref) VALUES (?, ?, ?) ON CONFLICT (tbl, col) DO UPDATE SET ref = excluded.ref",
+				if _, err := w.q.ExecContext(w.ctx, w.q.upsert(refsTable, []string{"tbl", "col", "ref"}, 2),
 					tw.t.Name, c.Name, c.Ref.String()); err != nil {
 					return err
 				}
@@ -235,7 +264,7 @@ func (w *writer) selfOrder(tw *tableWork, dels []*rowWork) ([]*rowWork, error) {
 			cols = append(cols, c.Name)
 		}
 	}
-	if len(cols) == 0 || len(dels) < 2 {
+	if len(cols) == 0 || len(dels) < 2 && !w.q.my {
 		return dels, nil
 	}
 	pointsAt := func(from, to *rowWork) bool {
@@ -246,6 +275,34 @@ func (w *writer) selfOrder(tw *tableWork, dels []*rowWork) ([]*rowWork, error) {
 			}
 		}
 		return false
+	}
+	clearRefs := func(rows []*rowWork) error {
+		sets := make([]string, len(cols))
+		for i, col := range cols {
+			sets[i] = quoteIdent(col) + " = NULL"
+		}
+		for _, rw := range rows {
+			args := make([]any, len(rw.live.rawKey))
+			for i, v := range rw.live.rawKey {
+				args[i] = v
+			}
+			if _, err := w.q.ExecContext(w.ctx, "UPDATE "+quoteIdent(tw.t.Name)+" SET "+strings.Join(sets, ", ")+" WHERE "+w.whereKey(tw), args...); err != nil {
+				return fmt.Errorf("deleting %s %s: %w", tw.t.Name, keyText(rw.keyVals), err)
+			}
+		}
+		return nil
+	}
+	if w.q.my {
+		// InnoDB won't delete a row that refers to itself.
+		var own []*rowWork
+		for _, rw := range dels {
+			if pointsAt(rw, rw) {
+				own = append(own, rw)
+			}
+		}
+		if err := clearRefs(own); err != nil {
+			return nil, err
+		}
 	}
 	var out []*rowWork
 	left := dels
@@ -267,18 +324,8 @@ func (w *writer) selfOrder(tw *tableWork, dels []*rowWork) ([]*rowWork, error) {
 		}
 		if len(next) == 0 {
 			// A loop: clear the references, then any order will do.
-			sets := make([]string, len(cols))
-			for i, col := range cols {
-				sets[i] = quoteIdent(col) + " = NULL"
-			}
-			for _, rw := range rest {
-				args := make([]any, len(rw.live.rawKey))
-				for i, v := range rw.live.rawKey {
-					args[i] = v
-				}
-				if _, err := w.q.ExecContext(w.ctx, "UPDATE "+quoteIdent(tw.t.Name)+" SET "+strings.Join(sets, ", ")+" WHERE "+w.whereKey(tw), args...); err != nil {
-					return nil, fmt.Errorf("deleting %s %s: %w", tw.t.Name, keyText(rw.keyVals), err)
-				}
+			if err := clearRefs(rest); err != nil {
+				return nil, err
 			}
 			return append(out, rest...), nil
 		}
@@ -410,7 +457,7 @@ func (w *writer) writeRow(tw *tableWork, rw *rowWork, ph phase) error {
 		if rw.unretire || rw.retire {
 			v, act, note := NullValue, ActUnretire, ""
 			if rw.retire {
-				v, act, note = TextValue(w.at), ActRetire, w.at
+				v, act, note = TextValue(w.q.retireText(w.at, tw.info.cols[t.RetireColumn])), ActRetire, w.at
 			}
 			q := "UPDATE " + quoteIdent(t.Name) + " SET " + quoteIdent(t.RetireColumn) + " = " + w.q.ph(tw.info.cols[t.RetireColumn]) + " WHERE " + w.whereKey(tw)
 			if err := w.exec(rw, act, q, append([]Value{v}, where...)...); err != nil {
@@ -575,7 +622,7 @@ func (w *writer) log(tw *tableWork, rw *rowWork, act Action, col string, old, ne
 	if new != nil {
 		n = new.encode()
 	}
-	_, err := w.q.ExecContext(w.ctx, "INSERT INTO "+changesTable+" (run, seq, tbl, key, action, col, old, new, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err := w.q.ExecContext(w.ctx, "INSERT INTO "+changesTable+" (run, seq, tbl, \"key\", action, col, old, new, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		w.run, w.seq, tw.t.Name, rw.key, string(act), col, o, n, note)
 	return err
 }
@@ -586,7 +633,7 @@ func (w *writer) writeLedger(tw *tableWork, rw *rowWork) error {
 		rw.ledgerOp, rw.ledgerVals, rw.ledgerRet = ledgerUpsert, rw.base.vals, rw.base.retired
 	}
 	if rw.oldKey != "" {
-		if _, err := w.q.ExecContext(w.ctx, "DELETE FROM "+rowsTable+" WHERE tbl = ? AND key = ?", tw.t.Name, rw.oldKey); err != nil {
+		if _, err := w.q.ExecContext(w.ctx, "DELETE FROM "+rowsTable+" WHERE tbl = ? AND \"key\" = ?", tw.t.Name, rw.oldKey); err != nil {
 			return err
 		}
 	}
@@ -596,7 +643,7 @@ func (w *writer) writeLedger(tw *tableWork, rw *rowWork) error {
 		if rw.ledgerRet {
 			ret = 1
 		}
-		_, err := w.q.ExecContext(w.ctx, "INSERT INTO "+rowsTable+" (tbl, key, vals, retired, run) VALUES (?, ?, ?, ?, ?) ON CONFLICT (tbl, key) DO UPDATE SET vals = excluded.vals, retired = excluded.retired, run = excluded.run",
+		_, err := w.q.ExecContext(w.ctx, w.q.upsert(rowsTable, []string{"tbl", "key", "vals", "retired", "run"}, 2),
 			tw.t.Name, rw.key, encodeVals(rw.ledgerVals), ret, w.run)
 		if err != nil {
 			return err
@@ -607,7 +654,7 @@ func (w *writer) writeLedger(tw *tableWork, rw *rowWork) error {
 			}
 		}
 	case ledgerRemove:
-		if _, err := w.q.ExecContext(w.ctx, "DELETE FROM "+rowsTable+" WHERE tbl = ? AND key = ?", tw.t.Name, rw.key); err != nil {
+		if _, err := w.q.ExecContext(w.ctx, "DELETE FROM "+rowsTable+" WHERE tbl = ? AND \"key\" = ?", tw.t.Name, rw.key); err != nil {
 			return err
 		}
 		for _, i := range rw.changes {

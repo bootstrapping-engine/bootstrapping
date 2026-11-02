@@ -233,7 +233,7 @@ func refsHistory(t *testing.T, b backend, seed int64, st *refsStats) {
 			}
 		}
 		if rng.Intn(3) == 0 {
-			mustExec(t, db, "UPDATE roles SET name = 'local' WHERE id = (SELECT min(id) FROM roles)")
+			mustExec(t, db, "UPDATE roles SET name = 'local' WHERE id = (SELECT m FROM (SELECT min(id) AS m FROM roles) x)")
 		}
 
 		set := setFrom(t, s.files(roleRemove, permRemove))
@@ -259,7 +259,7 @@ func refsHistory(t *testing.T, b backend, seed int64, st *refsStats) {
 		// PostgreSQL checks foreign keys on every statement, so a broken one
 		// would have failed the apply; SQLite is asked.
 		n, ok := 0, "ok"
-		if !b.pg {
+		if b.sqlite() {
 			db.QueryRow("SELECT count(*) FROM pragma_foreign_key_check").Scan(&n)
 			db.QueryRow("PRAGMA integrity_check").Scan(&ok)
 		}

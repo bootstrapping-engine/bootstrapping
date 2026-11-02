@@ -29,11 +29,11 @@ const (
 var ledgerSchema = []string{
 	`CREATE TABLE IF NOT EXISTS ` + rowsTable + ` (
 		tbl     TEXT NOT NULL,
-		key     TEXT NOT NULL,
+		"key"   TEXT NOT NULL,
 		vals    TEXT NOT NULL,
 		retired INTEGER NOT NULL DEFAULT 0,
 		run     INTEGER NOT NULL,
-		PRIMARY KEY (tbl, key)
+		PRIMARY KEY (tbl, "key")
 	)`,
 	`CREATE TABLE IF NOT EXISTS ` + runsTable + ` (
 		id        INTEGER PRIMARY KEY,
@@ -51,7 +51,7 @@ var ledgerSchema = []string{
 		run    INTEGER NOT NULL,
 		seq    INTEGER NOT NULL,
 		tbl    TEXT NOT NULL,
-		key    TEXT NOT NULL,
+		"key"  TEXT NOT NULL,
 		action TEXT NOT NULL,
 		col    TEXT NOT NULL DEFAULT '',
 		old    TEXT,
@@ -73,8 +73,10 @@ type colInfo struct {
 	name     string
 	declared string // the declared type; on PostgreSQL the full type, as format_type prints it
 	aff      Affinity
-	kind     Kind // PostgreSQL: the Value kind of the column's values
-	category byte // PostgreSQL: the type's category, such as 'N' for numeric types
+	kind     Kind   // PostgreSQL: the Value kind of the column's values
+	category byte   // PostgreSQL and MySQL: the type's category, such as 'N' for numeric types
+	dataType string // MySQL: DATA_TYPE, such as varchar or bit
+	charset  string // MySQL: " CHARACTER SET x COLLATE y" for a string column
 	pk       int
 	notNull  bool
 	hasDflt  bool
@@ -92,6 +94,9 @@ type tableInfo struct {
 func readTableInfo(ctx context.Context, q *dbConn, table string) (*tableInfo, error) {
 	if q.pg {
 		return readTableInfoPG(ctx, q, table)
+	}
+	if q.my {
+		return readTableInfoMySQL(ctx, q, table)
 	}
 	rows, err := q.QueryContext(ctx, "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?)", table)
 	if err != nil {
@@ -221,6 +226,11 @@ func Init(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return err
 	}
+	if q.my {
+		// DDL commits on MySQL, and CREATE TABLE IF NOT EXISTS is safe there
+		// without the lock.
+		return createLedger(ctx, q)
+	}
 	// With the apply lock, so it can't race an apply creating them too.
 	end, err := q.begin(ctx, true)
 	if err != nil {
@@ -234,7 +244,11 @@ func Init(ctx context.Context, db *sql.DB) error {
 }
 
 func createLedger(ctx context.Context, q *dbConn) error {
-	for _, s := range ledgerSchema {
+	schema := ledgerSchema
+	if q.my {
+		schema = mysqlLedgerSchema
+	}
+	for _, s := range schema {
 		if _, err := q.ExecContext(ctx, s); err != nil {
 			return fmt.Errorf("creating the ledger: %w", err)
 		}
@@ -255,7 +269,7 @@ type ledgerRow struct {
 
 func readLedger(ctx context.Context, q *dbConn, table string) (map[string]*ledgerRow, error) {
 	out := map[string]*ledgerRow{}
-	rows, err := q.QueryContext(ctx, "SELECT key, vals, retired FROM "+rowsTable+" WHERE tbl = ?", table)
+	rows, err := q.QueryContext(ctx, "SELECT \"key\", vals, retired FROM "+rowsTable+" WHERE tbl = ?", table)
 	if err != nil {
 		return nil, err
 	}
@@ -371,6 +385,8 @@ func readRowsWhere(ctx context.Context, q *dbConn, info *tableInfo, cols []strin
 	for i, c := range cols {
 		if q.pg {
 			qc[i] = "CAST(" + quoteIdent(c) + " AS text)"
+		} else if q.my {
+			qc[i] = mysqlRead(quoteIdent(c), info.cols[c])
 		} else {
 			qc[i] = "+" + quoteIdent(c)
 		}
@@ -378,6 +394,9 @@ func readRowsWhere(ctx context.Context, q *dbConn, info *tableInfo, cols []strin
 	query := "SELECT " + strings.Join(qc, ", ") + " FROM " + quoteIdent(info.name)
 	if where != "" {
 		query += " WHERE " + where
+	}
+	if q.lockReads {
+		query += " LOCK IN SHARE MODE"
 	}
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -387,7 +406,7 @@ func readRowsWhere(ctx context.Context, q *dbConn, info *tableInfo, cols []strin
 	var out [][]Value
 	for rows.Next() {
 		vals := make([]Value, len(cols))
-		if q.pg {
+		if q.pg || q.my {
 			texts := make([]sql.NullString, len(cols))
 			ptrs := make([]any, len(cols))
 			for i := range texts {
@@ -397,7 +416,7 @@ func readRowsWhere(ctx context.Context, q *dbConn, info *tableInfo, cols []strin
 				return nil, err
 			}
 			for i, s := range texts {
-				v, err := pgValue(s, info.cols[cols[i]].kind)
+				v, err := q.value(s, info.cols[cols[i]].kind)
 				if err != nil {
 					return nil, fmt.Errorf("reading %s.%s: %w", info.name, cols[i], err)
 				}
@@ -479,7 +498,7 @@ type LoggedChange struct {
 func readChangeLog(ctx context.Context, q *dbConn, table, key string) ([]LoggedChange, error) {
 	rows, err := q.QueryContext(ctx, `SELECT c.run, r.at, c.action, c.col, c.old, c.new, c.note
 		FROM `+changesTable+` c JOIN `+runsTable+` r ON r.id = c.run
-		WHERE c.tbl = ? AND c.key = ? ORDER BY c.run, c.seq`, table, key)
+		WHERE c.tbl = ? AND c."key" = ? ORDER BY c.run, c.seq`, table, key)
 	if err != nil {
 		return nil, err
 	}

@@ -16,9 +16,10 @@ import (
 	"time"
 )
 
-// Bootstrapping works with SQLite and PostgreSQL. dbConn hides most of the
-// difference: the SQL in this package is written with ? placeholders and
-// SQLite's names, and dbConn rewrites it for PostgreSQL. What differs more
+// Bootstrapping works with SQLite, PostgreSQL, MySQL and MariaDB. dbConn
+// hides most of the difference: the SQL in this package is written with ?
+// placeholders and double-quoted names, and dbConn rewrites it for
+// PostgreSQL ($1) and MySQL (backticks). What differs more
 // than a placeholder (reading the schema, how values compare, locking) is
 // done here, by dialect.
 
@@ -32,7 +33,18 @@ type querier interface {
 type dbConn struct {
 	q  querier
 	pg bool
+	my bool // MySQL or MariaDB
+
+	// lockReads, on MySQL during an apply, reads rows with shared locks.
+	// InnoDB's REPEATABLE READ doesn't fail a write to a row another
+	// transaction changed after the snapshot, as PostgreSQL's does; locked
+	// reads instead make an edit made during the apply wait for it, so the
+	// apply never writes over an edit it didn't plan with.
+	lockReads bool
 }
+
+// sqlite reports whether the database is SQLite.
+func (d *dbConn) sqlite() bool { return !d.pg && !d.my }
 
 // newDBConn works out which database q talks to. It must run outside a
 // transaction: on PostgreSQL a failed statement spoils the transaction it
@@ -51,7 +63,12 @@ func newDBConn(ctx context.Context, q querier) (*dbConn, error) {
 	if err := q.QueryRowContext(ctx, "SELECT sqlite_version()").Scan(&v); err == nil {
 		return &dbConn{q: q}, nil
 	}
-	return nil, errors.New("the database is neither SQLite nor PostgreSQL, the two Bootstrapping supports")
+	if ok, err := probeMySQL(ctx, q); err != nil {
+		return nil, err
+	} else if ok {
+		return &dbConn{q: q, my: true}, nil
+	}
+	return nil, errors.New("the database is not SQLite, PostgreSQL, MySQL or MariaDB, the ones Bootstrapping supports")
 }
 
 func (d *dbConn) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
@@ -69,6 +86,9 @@ func (d *dbConn) QueryRowContext(ctx context.Context, query string, args ...any)
 // rebind turns ? placeholders into $1, $2... for PostgreSQL, leaving quoted
 // names and strings alone.
 func (d *dbConn) rebind(query string) string {
+	if d.my {
+		return mysqlIdents(query)
+	}
 	if !d.pg || !strings.Contains(query, "?") {
 		return query
 	}
@@ -115,6 +135,9 @@ func (d *dbConn) args(args []any) []any {
 // ph is the placeholder for a value going into (or compared with) column
 // c: on PostgreSQL the text it's sent as is cast to the column's type.
 func (d *dbConn) ph(c colInfo) string {
+	if d.my && c.dataType == "bit" {
+		return "CAST(? AS UNSIGNED)"
+	}
 	if !d.pg {
 		return "?"
 	}
@@ -124,7 +147,7 @@ func (d *dbConn) ph(c colInfo) string {
 // eq compares a column with a placeholder. Keys are never NULL, so = does;
 // on SQLite IS keeps the old statements, which also match NULL.
 func (d *dbConn) eq(col string, c colInfo) string {
-	if d.pg {
+	if d.pg || d.my {
 		return quoteIdent(col) + " = " + d.ph(c)
 	}
 	return quoteIdent(col) + " IS ?"
@@ -137,6 +160,9 @@ func (d *dbConn) eq(col string, c colInfo) string {
 // returns the function that ends the transaction, by commit or rollback,
 // and releases the lock.
 func (d *dbConn) begin(ctx context.Context, write bool) (end func(commit bool) error, err error) {
+	if d.my {
+		return d.beginMySQL(ctx, write)
+	}
 	bg := context.WithoutCancel(ctx)
 	if !d.pg {
 		var after func()
@@ -236,12 +262,79 @@ func (d *dbConn) finisher(bg context.Context, after func()) func(bool) error {
 func (d *dbConn) ledgerTableExists(ctx context.Context, name string) (bool, error) {
 	var n int
 	var err error
-	if d.pg {
+	switch {
+	case d.pg:
 		err = d.QueryRowContext(ctx, "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname = current_schema() AND tablename = ?", name).Scan(&n)
-	} else {
+	case d.my:
+		err = d.QueryRowContext(ctx, "SELECT count(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", name).Scan(&n)
+	default:
 		err = d.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?", name).Scan(&n)
 	}
 	return n > 0, err
+}
+
+// seedText is a seed value as the text the server converts to the column's
+// type (PostgreSQL and MySQL).
+func (d *dbConn) seedText(x any, c colInfo) (string, error) {
+	if d.my {
+		return mysqlSeedText(x, c)
+	}
+	return pgSeedText(x, c)
+}
+
+// cast converts seed texts to a column's type on the server (PostgreSQL
+// and MySQL) and returns each one's value as stored.
+func (d *dbConn) cast(ctx context.Context, c colInfo, texts []string) (map[string]Value, error) {
+	if d.my {
+		return d.mysqlCast(ctx, c, texts)
+	}
+	return d.pgCast(ctx, c, texts)
+}
+
+// value is a value as the server printed it (PostgreSQL and MySQL).
+func (d *dbConn) value(s sql.NullString, k Kind) (Value, error) {
+	if d.my {
+		return mysqlValue(s, k)
+	}
+	return pgValue(s, k)
+}
+
+// retireText is the time of an apply (RFC 3339, UTC) as written into a
+// retire column. MySQL's date and time types don't read RFC 3339.
+func (d *dbConn) retireText(at string, c colInfo) string {
+	if !d.my || len(at) < 19 {
+		return at
+	}
+	switch c.dataType {
+	case "date":
+		return at[:10]
+	case "datetime", "timestamp":
+		return at[:10] + " " + at[11:19]
+	}
+	return at
+}
+
+// upsert is an INSERT of cols that updates the row instead when the first
+// nkey columns match one already there.
+func (d *dbConn) upsert(table string, cols []string, nkey int) string {
+	names := make([]string, len(cols))
+	marks := make([]string, len(cols))
+	sets := make([]string, 0, len(cols)-nkey)
+	for i, c := range cols {
+		names[i], marks[i] = quoteIdent(c), "?"
+		if i >= nkey {
+			if d.my {
+				sets = append(sets, quoteIdent(c)+" = VALUES("+quoteIdent(c)+")")
+			} else {
+				sets = append(sets, quoteIdent(c)+" = excluded."+quoteIdent(c))
+			}
+		}
+	}
+	q := "INSERT INTO " + table + " (" + strings.Join(names, ", ") + ") VALUES (" + strings.Join(marks, ", ") + ")"
+	if d.my {
+		return q + " ON DUPLICATE KEY UPDATE " + strings.Join(sets, ", ")
+	}
+	return q + " ON CONFLICT (" + strings.Join(names[:nkey], ", ") + ") DO UPDATE SET " + strings.Join(sets, ", ")
 }
 
 // ---- PostgreSQL values ----

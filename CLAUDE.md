@@ -130,7 +130,7 @@ Design decisions:
 - Version 0.3.0.
 
 Steps:
-1. [ ] Upkeep: modernc SQLite, go 1.26, CI without the 1.24 job and cgo.
+1. [x] Upkeep: modernc SQLite, go 1.26, CI without the 1.24 job and cgo (84fd219, CI green on 3 OS).
 2. [ ] Phase A: MySQL/MariaDB dialect, CI jobs, tests.
 3. [ ] Phase B2: composite references, tests.
 4. [ ] Phase B1: the Action and its test workflow.

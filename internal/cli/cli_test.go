@@ -407,3 +407,29 @@ func TestMarkdownHintEscaped(t *testing.T) {
 		t.Fatalf("%s", out)
 	}
 }
+
+func TestMySQLURL(t *testing.T) {
+	for _, c := range []struct{ in, net, addr, user, pass, db string }{
+		{"mysql://app:s%40cret@db.example:3307/shop", "tcp", "db.example:3307", "app", "s@cret", "shop"},
+		{"mysql://root@db.example/shop", "tcp", "db.example:3306", "root", "", "shop"},
+		{"mariadb://u:p@[::1]:3306/x", "tcp", "[::1]:3306", "u", "p", "x"},
+		{"mysql://u@/x?socket=/run/mysqld/mysqld.sock", "unix", "/run/mysqld/mysqld.sock", "u", "", "x"},
+	} {
+		cfg, err := mysqlConfig(c.in)
+		if err != nil {
+			t.Fatalf("%s: %v", c.in, err)
+		}
+		if cfg.Net != c.net || cfg.Addr != c.addr || cfg.User != c.user || cfg.Passwd != c.pass || cfg.DBName != c.db {
+			t.Errorf("%s: got %s %s %s %s %s", c.in, cfg.Net, cfg.Addr, cfg.User, cfg.Passwd, cfg.DBName)
+		}
+	}
+	cfg, err := mysqlConfig("mysql://u:p@h:1/d?tls=skip-verify&timeout=5s")
+	if err != nil || cfg.TLSConfig != "skip-verify" || cfg.Timeout.String() != "5s" || cfg.User != "u" || cfg.DBName != "d" {
+		t.Fatalf("parameters: %+v %v", cfg, err)
+	}
+	for _, bad := range []string{"mysql://u@h/", "mysql://u@h/a/b"} {
+		if _, err := mysqlConfig(bad); err == nil {
+			t.Errorf("%s: no error", bad)
+		}
+	}
+}

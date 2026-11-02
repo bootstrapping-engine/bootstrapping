@@ -12,13 +12,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
 	bs "github.com/bootstrapping-engine/bootstrapping"
-	_ "github.com/lib/pq"  // the PostgreSQL driver the command ships with
-	_ "modernc.org/sqlite" // the SQLite driver the command ships with (pure Go)
+	"github.com/go-sql-driver/mysql" // the MySQL and MariaDB driver the command ships with
+	_ "github.com/lib/pq"            // the PostgreSQL driver the command ships with
+	_ "modernc.org/sqlite"           // the SQLite driver the command ships with (pure Go)
 )
 
 // Exit codes.
@@ -44,8 +47,9 @@ Commands:
   version   print the version
 
 Flags, for every command:
-  -db DB        the SQLite database file, or a PostgreSQL URL such as
-                postgres://user@host/dbname (or $BOOTSTRAPPING_DB)
+  -db DB        the SQLite database file, or a server URL such as
+                postgres://user@host/dbname or mysql://user@host/dbname
+                (or $BOOTSTRAPPING_DB)
   -seeds DIR    the seed files (or $BOOTSTRAPPING_SEEDS; default "seeds")
   -json         print JSON instead of text
   -markdown     plan, status and apply: print the plan as Markdown, for a
@@ -176,10 +180,21 @@ func parseTake(s string) (bs.Resolution, error) {
 
 func (c *command) open() (*sql.DB, error) {
 	if c.dbPath == "" {
-		return nil, errors.New("no database: give -db with a SQLite file or a postgres:// URL, or set BOOTSTRAPPING_DB")
+		return nil, errors.New("no database: give -db with a SQLite file or a postgres:// or mysql:// URL, or set BOOTSTRAPPING_DB")
 	}
 	if isPostgresURL(c.dbPath) {
 		return sql.Open("postgres", c.dbPath)
+	}
+	if isMySQLURL(c.dbPath) {
+		cfg, err := mysqlConfig(c.dbPath)
+		if err != nil {
+			return nil, err
+		}
+		conn, err := mysql.NewConnector(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return sql.OpenDB(conn), nil
 	}
 	if _, err := os.Stat(c.dbPath); err != nil {
 		return nil, fmt.Errorf("no database at %s", c.dbPath)
@@ -191,6 +206,58 @@ func (c *command) open() (*sql.DB, error) {
 // SQLite file.
 func isPostgresURL(s string) bool {
 	return strings.HasPrefix(s, "postgres://") || strings.HasPrefix(s, "postgresql://")
+}
+
+// isMySQLURL reports whether -db names a MySQL or MariaDB server.
+func isMySQLURL(s string) bool {
+	return strings.HasPrefix(s, "mysql://") || strings.HasPrefix(s, "mariadb://")
+}
+
+// mysqlConfig reads a mysql://user:password@host:port/dbname URL. Query
+// parameters are passed to the driver as they are (tls=true, for one); a
+// socket parameter connects through a Unix socket instead of TCP.
+func mysqlConfig(s string) (*mysql.Config, error) {
+	u, err := url.Parse(s)
+	if err != nil {
+		return nil, fmt.Errorf("reading the database URL: %w", err)
+	}
+	db := strings.TrimPrefix(u.Path, "/")
+	if db == "" || strings.Contains(db, "/") {
+		return nil, errors.New("the MySQL URL has to name a database: mysql://user:password@host:3306/dbname")
+	}
+	cfg := mysql.NewConfig()
+	cfg.DBName = db
+	if u.User != nil {
+		cfg.User = u.User.Username()
+		cfg.Passwd, _ = u.User.Password()
+	}
+	cfg.Net, cfg.Addr = "tcp", u.Host
+	if u.Port() == "" && u.Host != "" {
+		cfg.Addr = net.JoinHostPort(u.Hostname(), "3306")
+	}
+	q := u.Query()
+	if sock := q.Get("socket"); sock != "" {
+		cfg.Net, cfg.Addr = "unix", sock
+		q.Del("socket")
+	}
+	if cfg.Addr == "" {
+		cfg.Addr = "127.0.0.1:3306"
+	}
+	if len(q) > 0 {
+		// The driver reads its own parameters (tls, timeout and the rest)
+		// from a DSN, so they go through one.
+		base := cfg.FormatDSN()
+		sep := "?"
+		if strings.Contains(base, "?") {
+			sep = "&"
+		}
+		parsed, err := mysql.ParseDSN(base + sep + q.Encode())
+		if err != nil {
+			return nil, fmt.Errorf("reading the database URL: %w", err)
+		}
+		cfg = parsed
+	}
+	return cfg, nil
 }
 
 // dsn makes a file path into a SQLite URI, escaping the characters a URI
