@@ -10,10 +10,16 @@ The Go package depends on:
 
 The bootstrapping, bst and bootstrapping-demo commands and their
 ready-built binaries also contain:
-  mattn/go-sqlite3, Copyright (c) 2014 Yasuhiro Matsumoto, MIT License
+  modernc.org/sqlite and the modernc.org modules it uses, Copyright The
+  Sqlite and libc Authors, BSD 3-Clause License; the SQLite code they are
+  translated from is in the public domain
   lib/pq, Copyright (c) 2011-2013 'pq' Contributors, portions
   Copyright (c) 2011 Blake Mizerany, MIT License
-  SQLite 3.53.4, in the public domain
+  go-sql-driver/mysql, Copyright The Go-MySQL-Driver Authors, Mozilla
+  Public License 2.0 (source: https://github.com/go-sql-driver/mysql)
+  filippo.io/edwards25519, Copyright The Go Authors, BSD 3-Clause License
+  golang.org/x/sys, google/uuid, remyoudompheng/bigfft (BSD 3-Clause),
+  dustin/go-humanize, mattn/go-isatty, ncruces/go-strftime (MIT)
   The Go runtime and standard library, Copyright 2009 The Go Authors,
   BSD-style license
-Their notices are in THIRD_PARTY_LICENSES.md.
+Their license texts are in THIRD_PARTY_LICENSES.md in each release archive.

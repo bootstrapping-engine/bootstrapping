@@ -6,9 +6,14 @@ next.
 
 ## The short version
 
-1. Raise `const Version = "X.Y.Z"` in `bootstrapping.go`.
-2. Write what changed into the commit message.
-3. Push the commit to `main`.
+1. Refresh `test/results` with the `record` workflow (it runs every test on
+   SQLite, PostgreSQL 16 and MySQL 8.4 and commits the files):
+   `gh api -X POST repos/bootstrapping-engine/bootstrapping/actions/workflows/record.yml/dispatches -f ref=main`.
+   Its commit starts no other workflow, so record before raising the
+   version.
+2. Raise `const Version = "X.Y.Z"` in `bootstrapping.go`.
+3. Write what changed into the commit message.
+4. Push the commit to `main`.
 
 When the `test` workflow passes on that commit (the full suite and the smoke
 check on Linux, macOS and Windows), the `release` workflow builds the
@@ -32,13 +37,14 @@ tag already exists and stops quietly.
   loudly if the version is lower than the newest tag.
   [scripts/release-plan.py](scripts/release-plan.py) has the rules, and
   [scripts/release_plan_test.py](scripts/release_plan_test.py) its cases.
-- **build.** The SQLite driver is cgo, so each target builds on its own kind
-  of machine from that exact commit: Linux x86-64 and ARM64 (statically
-  linked, checked), macOS Apple silicon, macOS Intel (cross-built on Apple
-  silicon with `clang -arch x86_64`), and Windows (MSYS2 MinGW, statically
-  linked). Each set except macOS Intel runs [scripts/smoke.py](scripts/smoke.py)
-  where it was built; macOS Intel is checked for its architecture. Then it
-  is packed.
+- **build.** Everything is pure Go (CGO_ENABLED=0), so the binaries are
+  static. Each target builds from that exact commit: Linux x86-64 and ARM64
+  (statically linked, checked), macOS Apple silicon, macOS Intel
+  (cross-built on Apple silicon, checked for its architecture) and
+  Windows. Each set except macOS Intel runs [scripts/smoke.py](scripts/smoke.py)
+  where it was built. Then it is packed, with a THIRD_PARTY_LICENSES.md
+  written by [scripts/third-party-licenses.sh](scripts/third-party-licenses.sh)
+  from the modules actually compiled in.
 - **release.** Runs only after every build and check passed. Writes
   SHA256SUMS and the notes, then creates the tag and the release in one
   step with `gh release create --target <commit>`, on the repo's own
@@ -82,6 +88,14 @@ check:
    matches SHA256SUMS.
 4. A downloaded Linux binary runs: `bst version` names the release, and
    `bootstrapping-demo` ends with "All checks passed."
+5. The `action-test` run started by the release passed its download job:
+   the GitHub Action ran the published binaries on Linux, macOS and
+   Windows, pinned to the new tag and as `latest`.
+
+A new dependency is resolved by the `tidy` workflow, since build sessions
+can't reach the Go module proxy: add the import, push, start
+`gh api -X POST repos/bootstrapping-engine/bootstrapping/actions/workflows/tidy.yml/dispatches -f ref=main`,
+and pull its go.mod and go.sum commit.
 
 ## By hand
 

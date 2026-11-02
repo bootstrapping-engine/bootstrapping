@@ -2,7 +2,8 @@
 
 Bootstrapping keeps the reference data an application ships with (roles,
 permissions, plan tiers, workflow states, country lists) in step with its
-SQLite or PostgreSQL database, without undoing what admins changed.
+SQLite, PostgreSQL, MySQL or MariaDB database, without undoing what admins
+changed.
 
 Loading that data once is easy. Updating it later is where it hurts. Your
 app ships v2 of its roles, but a customer's admin renamed one of them last
@@ -42,7 +43,7 @@ bst version
 The macOS binaries aren't signed by Apple; allow them once in System Settings
 under Privacy & Security, or run `xattr -d com.apple.quarantine bootstrapping bst bootstrapping-demo`.
 
-From Go (the command needs a C compiler, since its SQLite driver is cgo):
+From Go (1.26 or later; everything is pure Go, so no C compiler):
 
 ```sh
 go install github.com/bootstrapping-engine/bootstrapping/cmd/bootstrapping@latest
@@ -132,6 +133,10 @@ role_id = "editor"
 permission_id = "posts.publish"
 ```
 
+A row named by more than one column is referred to by all of them:
+`role_id = "roles.(region, code)"`, and the row gives
+`role_id = ["eu", "editor"]`.
+
 A renamed row keeps its id and its links with `_renamed_from = "author"`.
 Long lists, such as countries or currencies, can keep their rows in a CSV
 file instead: `rows = "countries.csv"` in the table's TOML file.
@@ -150,16 +155,32 @@ bst explain -db app.db -seeds seeds roles editor
 bst history -db app.db
 ```
 
-`-db` is a SQLite file or a PostgreSQL URL:
+`-db` is a SQLite file or a PostgreSQL, MySQL or MariaDB URL:
 
 ```sh
 bst apply -db 'postgres://app@db.internal/app?sslmode=require&search_path=app' -seeds seeds
+bst apply -db 'mysql://app:secret@db.internal:3306/app?tls=true' -seeds seeds
 ```
 
 `-db` and `-seeds` can come from `BOOTSTRAPPING_DB` and
 `BOOTSTRAPPING_SEEDS`. Every command takes `-json`, and `plan` takes
 `-markdown` for a pull request comment that shows what a seed change will
-do ([docs/REFERENCE.md](docs/REFERENCE.md) has a GitHub Actions example).
+do.
+
+### On a pull request
+
+The GitHub Action in this repository posts the plan as a comment on the
+pull request, updates that comment on every push, and fails the check when
+the plan has a conflict nobody settled:
+
+```yaml
+- uses: bootstrapping-engine/bootstrapping@v0.3.0
+  with:
+    database: ci.db        # or ${{ secrets.STAGING_DB_URL }}
+    seeds: seeds
+```
+
+[docs/ACTION.md](docs/ACTION.md) has the inputs and a whole workflow.
 
 Exit codes for `plan` and `status`: 0 in step, 2 an apply would write
 something, 3 a conflict blocks it, 1 an error. `apply` exits 0 when done
@@ -209,8 +230,8 @@ History:
 
 ## The Go library
 
-The library works with any `database/sql` driver for SQLite or PostgreSQL
-and doesn't import one; it tells the two apart on its own. Ship the seeds
+The library works with any `database/sql` driver for SQLite, PostgreSQL,
+MySQL or MariaDB and doesn't import one; it tells them apart on its own. Ship the seeds
 inside your binary and apply them at startup:
 
 ```go
@@ -234,17 +255,20 @@ the applies. [docs/REFERENCE.md](docs/REFERENCE.md) has the whole API.
 Each apply opens one connection, takes a lock, plans again inside the
 transaction, writes the data and the ledger, and commits. On SQLite the
 lock is the write lock (`BEGIN IMMEDIATE`); on PostgreSQL it's an advisory
-lock, and the transaction is REPEATABLE READ. A crash leaves the database as
-it was or as the apply leaves it. Two applies at once take turns: the second
-waits for the lock and finds nothing to do. On PostgreSQL an admin can keep
-working during an apply; if they edit a row the apply then tries to write,
-the apply fails with nothing written, and the next one sees the edit.
+lock, on MySQL and MariaDB a named lock (`GET_LOCK`), and the transaction is
+REPEATABLE READ. A crash leaves the database as it was or as the apply
+leaves it. Two applies at once take turns: the second waits for the lock
+and finds nothing to do. On PostgreSQL an admin can keep working during an
+apply; if they edit a row the apply then tries to write, the apply fails
+with nothing written, and the next one sees the edit. On MySQL and MariaDB
+the apply reads with shared locks, so such an edit waits until the apply
+commits and lands after it.
 
 Values are compared the way the database stores them. On SQLite a seed's
 `1` in a TEXT column is the text `"1"`, as SQLite would have stored it. On
-PostgreSQL every seed value is cast to its column's type by the server, so
-`7` in a `numeric(10,2)` column is `7.00` and a jsonb document matches
-however its keys were ordered. Neither looks like a change.
+PostgreSQL, MySQL and MariaDB every seed value is converted to its column's
+type by the server, so `7` in a `numeric(10,2)` column is `7.00` and a jsonb
+document matches however its keys were ordered. Neither looks like a change.
 [docs/MERGE.md](docs/MERGE.md) is the full set of rules, row by row and
 value by value.
 
@@ -299,13 +323,16 @@ merge: one that overwrites local edits, one that lets conflicts through as
 updates, one that deletes edited rows. Each failed within its first few
 histories.
 
-## Limits in version 0.2
+## Limits in version 0.3
 
-- SQLite and PostgreSQL (12 or later). On PostgreSQL, tables are found
-  through the connection's `search_path`; a table a reference points at
-  needs a one-column primary key.
-- A reference names a row by one column; composite references aren't
-  supported.
+- SQLite, PostgreSQL 12 or later, MySQL 8.0 or later and MariaDB 10.6 or
+  later. On PostgreSQL, tables are found through the connection's
+  `search_path`; on PostgreSQL, MySQL and MariaDB a table a reference
+  points at needs a one-column primary key.
+- On MySQL and MariaDB, keys are compared as exact text. A key column with
+  a collation that ignores case or trailing spaces (MySQL's default
+  `utf8mb4_0900_ai_ci` ignores case) can't hold two seed keys that differ
+  only that way.
 - Seeds are for reference data: thousands of rows, not millions. Every
   managed table is read in full on each plan.
 

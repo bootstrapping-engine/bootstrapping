@@ -50,6 +50,8 @@ jobs:
       # The race detector needs cgo; the rest is pure Go.
       - if: runner.os == 'Linux'
         run: CGO_ENABLED=1 go test -race -count=1 ./...
+      - name: License texts of every compiled-in module
+        run: bash scripts/third-party-licenses.sh > /dev/null
       - name: Release plan cases
         run: python3 -B -m unittest discover -s scripts -p '*_test.py'
       - name: Smoke check on release-style binaries

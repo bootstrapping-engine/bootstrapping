@@ -1,0 +1,281 @@
+name: action-test
+
+# Runs the GitHub Action in this repo (action.yml) with a bootstrapping built
+# from this commit, through the demo's story: a fresh database (pending), in
+# step, a conflict nobody settled (reported, then failing), a database that
+# can't be opened and a bad switch (both failing). The comment job posts
+# plans to a closed issue kept for the purpose, as a pull request run would,
+# and checks a second run updates the same comment. The download job runs
+# the action on the published binaries, pinned to the newest tag and
+# unpinned; it starts by itself after each release and can be started by
+# hand.
+on:
+  push:
+    branches: [main]
+    paths: [action.yml, .github/workflows/action-test.yml, "cmd/**", "internal/**", "*.go", go.mod, "examples/permissions/**"]
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag the download job pins (vX.Y.Z); empty means the newest release
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  local:
+    if: github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+      - name: Build bootstrapping and a database
+        run: |
+          ext=""; PY=python3
+          if [ "$RUNNER_OS" = Windows ]; then ext=.exe; PY=python; fi
+          go build -o "$RUNNER_TEMP/bootstrapping$ext" ./cmd/bootstrapping
+          echo "BS_BIN=$RUNNER_TEMP/bootstrapping$ext" >> "$GITHUB_ENV"
+          echo "PY=$PY" >> "$GITHUB_ENV"
+          db="$RUNNER_TEMP/action.db"
+          "$PY" -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.executescript(open(sys.argv[2]).read()); c.close()" "$db" examples/permissions/schema.sql
+          echo "DB=$db" >> "$GITHUB_ENV"
+
+      - name: A fresh database has inserts pending
+        id: fresh
+        uses: ./
+        with:
+          database: ${{ env.DB }}
+          seeds: examples/permissions/seeds/v1
+          bootstrapping-path: ${{ env.BS_BIN }}
+      - name: Apply v1
+        run: '"$BS_BIN" apply -db "$DB" -seeds examples/permissions/seeds/v1'
+      - name: In step after the apply
+        id: instep
+        uses: ./
+        with:
+          database: ${{ env.DB }}
+          seeds: examples/permissions/seeds/v1
+          bootstrapping-path: ${{ env.BS_BIN }}
+      - name: An admin's edits, then v2
+        run: |
+          "$PY" -c "
+          import sqlite3, sys
+          c = sqlite3.connect(sys.argv[1])
+          c.execute(\"UPDATE roles SET name = 'Content Editor' WHERE code = 'editor'\")
+          c.execute(\"DELETE FROM role_permissions WHERE role_id = (SELECT id FROM roles WHERE code = 'editor') AND permission_id = (SELECT id FROM permissions WHERE code = 'posts.delete')\")
+          c.commit()
+          " "$DB"
+          "$BS_BIN" apply -db "$DB" -seeds examples/permissions/seeds/v2
+      - name: A conflict is reported with fail-on-conflict off
+        id: blocked
+        uses: ./
+        with:
+          database: ${{ env.DB }}
+          seeds: examples/permissions/seeds/v3
+          fail-on-conflict: "false"
+          bootstrapping-path: ${{ env.BS_BIN }}
+      - name: A conflict fails the step
+        id: blockfail
+        continue-on-error: true
+        uses: ./
+        with:
+          database: ${{ env.DB }}
+          seeds: examples/permissions/seeds/v3
+          bootstrapping-path: ${{ env.BS_BIN }}
+      - name: A database that isn't there fails the step
+        id: broken
+        continue-on-error: true
+        uses: ./
+        with:
+          database: ${{ runner.temp }}/no-such.db
+          seeds: examples/permissions/seeds/v1
+          bootstrapping-path: ${{ env.BS_BIN }}
+      - name: A bad switch fails the step
+        id: badswitch
+        continue-on-error: true
+        uses: ./
+        with:
+          database: ${{ env.DB }}
+          seeds: examples/permissions/seeds/v3
+          fail-on-conflict: "flase"
+          bootstrapping-path: ${{ env.BS_BIN }}
+      - name: Check
+        env:
+          BLOCKED_PLAN: ${{ steps.blocked.outputs.plan }}
+          BROKEN_PLAN: ${{ steps.broken.outputs.plan }}
+        run: |
+          set -u
+          bad=0
+          want() { if [ "$2" != "$3" ]; then echo "::error::$1: got $2, want $3"; bad=1; fi; }
+          want "fresh" "${{ steps.fresh.outputs.exit-code }} ${{ steps.fresh.outputs.result }}" "2 pending"
+          want "in step" "${{ steps.instep.outputs.exit-code }} ${{ steps.instep.outputs.result }}" "0 in-step"
+          want "blocked" "${{ steps.blocked.outputs.exit-code }} ${{ steps.blocked.outputs.result }} ${{ steps.blocked.outcome }}" "3 blocked success"
+          want "blocked, failing" "${{ steps.blockfail.outputs.exit-code }} ${{ steps.blockfail.outcome }}" "3 failure"
+          want "broken" "${{ steps.broken.outputs.result }} ${{ steps.broken.outcome }}" "error failure"
+          want "bad switch" "${{ steps.badswitch.outputs.result }} ${{ steps.badswitch.outcome }}" "error failure"
+          want "version" "${{ steps.fresh.outputs.version }}" "local"
+          want "no comment on a push" "${{ steps.fresh.outputs.comment-url }}" ""
+          grep -qi 'conflict' "$BLOCKED_PLAN" || { echo "::error::the blocked plan doesn't name the conflict"; cat "$BLOCKED_PLAN"; bad=1; }
+          grep -q "couldn't make the plan" "$BROKEN_PLAN" && grep -q 'no database at' "$BROKEN_PLAN" || { echo "::error::the error isn't in the plan file"; cat "$BROKEN_PLAN"; bad=1; }
+          exit $bad
+
+  # The comment as a pull request run posts it, on a closed issue kept for
+  # these runs (a pull request is an issue to the comments API).
+  comment:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      CGO_ENABLED: "0"
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+      - name: Build bootstrapping, a database and the issue
+        run: |
+          go build -o "$RUNNER_TEMP/bootstrapping" ./cmd/bootstrapping
+          echo "BS_BIN=$RUNNER_TEMP/bootstrapping" >> "$GITHUB_ENV"
+          db="$RUNNER_TEMP/action.db"
+          python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.executescript(open(sys.argv[2]).read()); c.close()" "$db" examples/permissions/schema.sql
+          echo "DB=$db" >> "$GITHUB_ENV"
+          title="Action test: plan comments"
+          n=$(gh api "repos/$GITHUB_REPOSITORY/issues?state=all&per_page=100" --jq ".[] | select(.title == \"$title\" and .pull_request == null) | .number" | head -n 1)
+          if [ -z "$n" ]; then
+            n=$(gh api -X POST "repos/$GITHUB_REPOSITORY/issues" -f title="$title" \
+              -f body="The action-test workflow posts plans here, the way the action comments on a pull request. Closed on purpose." --jq .number)
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$n" -f state=closed > /dev/null
+          fi
+          echo "ISSUE=$n" >> "$GITHUB_ENV"
+      - name: First run posts or updates the v1 comment
+        id: one
+        uses: ./
+        with:
+          database: ${{ env.DB }}
+          seeds: examples/permissions/seeds/v1
+          pull-request: ${{ env.ISSUE }}
+          bootstrapping-path: ${{ env.BS_BIN }}
+      - name: Second run updates the same comment
+        id: two
+        uses: ./
+        with:
+          database: ${{ env.DB }}
+          seeds: examples/permissions/seeds/v1
+          pull-request: ${{ env.ISSUE }}
+          bootstrapping-path: ${{ env.BS_BIN }}
+      - name: Another seed folder gets a comment of its own
+        id: other
+        uses: ./
+        with:
+          database: ${{ env.DB }}
+          seeds: examples/permissions/seeds/v2
+          pull-request: ${{ env.ISSUE }}
+          bootstrapping-path: ${{ env.BS_BIN }}
+      - name: Check
+        run: |
+          set -u
+          bad=0
+          one="${{ steps.one.outputs.comment-id }}"; two="${{ steps.two.outputs.comment-id }}"; other="${{ steps.other.outputs.comment-id }}"
+          [ -n "$one" ] || { echo "::error::no comment was posted"; exit 1; }
+          [ "$one" = "$two" ] || { echo "::error::the second run posted a new comment ($two, not $one)"; bad=1; }
+          [ "$other" != "$one" ] || { echo "::error::v2 shares v1's comment"; bad=1; }
+          body=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$one" --jq .body)
+          case "$body" in "<!-- bootstrapping-plan seeds=examples/permissions/seeds/v1 -->"*) ;; *) echo "::error::the comment has no marker"; bad=1 ;; esac
+          printf '%s' "$body" | grep -q 'insert' || { echo "::error::the comment has no plan"; printf '%s\n' "$body"; bad=1; }
+          count=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" --jq '[.[] | select(.body | startswith("<!-- bootstrapping-plan seeds=examples/permissions/seeds/v1 -->"))] | length' | awk '{n += $1} END {print n + 0}')
+          [ "$count" = 1 ] || { echo "::error::$count v1 comments, want 1"; bad=1; }
+          exit $bad
+
+  # The release workflow runs after every green test run on main but
+  # publishes only when the version is new. Go on only when the newest
+  # release was made from the commit that run was for.
+  fresh:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.f.outputs.go }}
+    steps:
+      - id: f
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_dispatch ]; then echo "go=yes" >> "$GITHUB_OUTPUT"; exit 0; fi
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)
+          if [ "$sha" = "$HEAD_SHA" ]; then echo "go=yes" >> "$GITHUB_OUTPUT"; else echo "go=no" >> "$GITHUB_OUTPUT"; echo "No new release for $HEAD_SHA (newest is $tag)"; fi
+
+  # The published binaries through the action: pinned to a tag, and latest.
+  download:
+    needs: fresh
+    if: needs.fresh.outputs.go == 'yes'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        pin: [tag, latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Pick the version
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAG:-}" ]; then TAG=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name); fi
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::bad tag $TAG"; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [ "${{ matrix.pin }}" = tag ]; then echo "version=" >> "$GITHUB_OUTPUT"; else echo "version=latest" >> "$GITHUB_OUTPUT"; fi
+      # The action as released, so an empty version means the tag's own.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.pick.outputs.tag }}
+      - name: A database
+        run: |
+          PY=python3; [ "$RUNNER_OS" = Windows ] && PY=python
+          db="$RUNNER_TEMP/action.db"
+          "$PY" -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.executescript(open(sys.argv[2]).read()); c.close()" "$db" examples/permissions/schema.sql
+          echo "DB=$db" >> "$GITHUB_ENV"
+      - name: Plan through the published binary
+        id: plan
+        uses: ./
+        with:
+          database: ${{ env.DB }}
+          seeds: examples/permissions/seeds/v1
+          version: ${{ steps.pick.outputs.version }}
+      - name: Check
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+        run: |
+          set -u
+          bad=0
+          want() { if [ "$2" != "$3" ]; then echo "::error::$1: got $2, want $3"; bad=1; fi; }
+          want "exit" "${{ steps.plan.outputs.exit-code }}" 2
+          if [ "${{ matrix.pin }}" = tag ]; then want "version" "${{ steps.plan.outputs.version }}" "$TAG"; else want "version" "${{ steps.plan.outputs.version }}" latest; fi
+          ext=""; [ "$RUNNER_OS" = Windows ] && ext=.exe
+          "$RUNNER_TEMP/bootstrapping-bin/bootstrapping$ext" version | grep -F "${TAG#v}" || { echo "::error::the binary is not $TAG"; bad=1; }
+          exit $bad

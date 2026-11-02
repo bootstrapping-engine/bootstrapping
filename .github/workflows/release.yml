@@ -121,7 +121,8 @@ jobs:
           "$PY" -B scripts/smoke.py pkg
       - name: Package
         run: |
-          cp LICENSE NOTICE THIRD_PARTY_LICENSES.md README.md pkg/
+          cp LICENSE NOTICE README.md pkg/
+          bash scripts/third-party-licenses.sh > pkg/THIRD_PARTY_LICENSES.md
           name=bootstrapping_${{ matrix.name }}
           if [ "${{ matrix.pack }}" = zip ]; then
             (cd pkg && zip -q "../$name.zip" *)

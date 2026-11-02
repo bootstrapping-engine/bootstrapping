@@ -1,0 +1,207 @@
+name: Bootstrapping plan
+description: Post what applying the seed files would change in a database as a pull request comment, and fail the check when the plan has a conflict nobody settled.
+author: Bootstrapping.org
+branding:
+  icon: database
+  color: green
+
+inputs:
+  database:
+    description: "The database to plan against, as the command's -db takes it: a SQLite file, or a postgres:// or mysql:// URL. Pass a URL with a password from a secret."
+    required: true
+  seeds:
+    description: The seed folder, relative to the workspace.
+    required: true
+  comment:
+    description: Post the plan as a pull request comment (one per seed folder, updated on every run). Only on pull_request events.
+    required: false
+    default: "true"
+  fail-on-conflict:
+    description: Fail the step when the plan has a conflict nobody settled (an apply would stop). Set to false to report only. An error always fails.
+    required: false
+    default: "true"
+  version:
+    description: "Bootstrapping release to use (v0.3.0 or later), or latest. Empty means the release this action belongs to (bootstrapping-engine/bootstrapping@v0.3.0 runs 0.3.0), or the latest when that one isn't published."
+    required: false
+    default: ""
+  pull-request:
+    description: The pull request to comment on. Empty means the one the event is for; a push event has none, so nothing is posted.
+    required: false
+    default: ""
+  github-token:
+    description: Token for the comment. The default token can comment on pull requests from the same repository; from a fork it can't, and the step only warns.
+    required: false
+    default: ${{ github.token }}
+  bootstrapping-path:
+    description: Use this bootstrapping binary instead of downloading one (for testing the action itself).
+    required: false
+    default: ""
+
+outputs:
+  result:
+    description: "in-step, pending, blocked or error"
+    value: ${{ steps.plan.outputs.result }}
+  exit-code:
+    description: "The plan's exit code: 0 in step, 2 pending, 3 blocked, 1 error"
+    value: ${{ steps.plan.outputs.exit-code }}
+  plan:
+    description: File holding the plan as Markdown
+    value: ${{ steps.plan.outputs.plan }}
+  version:
+    description: The release the action ran (a vX.Y.Z tag, latest, or local)
+    value: ${{ steps.install.outputs.version }}
+  comment-url:
+    description: The pull request comment, when one was posted or updated
+    value: ${{ steps.comment.outputs.url }}
+  comment-id:
+    description: The comment's id, when one was posted or updated
+    value: ${{ steps.comment.outputs.id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install bootstrapping
+      id: install
+      shell: bash
+      env:
+        BS_VERSION: ${{ inputs.version }}
+        BS_PATH: ${{ inputs.bootstrapping-path }}
+      run: |
+        set -euo pipefail
+        if [ -n "$BS_PATH" ]; then
+          "$BS_PATH" version
+          echo "bin=$BS_PATH" >> "$GITHUB_OUTPUT"
+          echo "version=local" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        # The release this copy of the action belongs to is the Version in
+        # its own source, which a tag of this repository carries.
+        own=""
+        if [ -z "$BS_VERSION" ]; then
+          own=$(sed -n 's/^const Version = "\([0-9][0-9.]*\)"$/v\1/p' "$GITHUB_ACTION_PATH/bootstrapping.go")
+          BS_VERSION="${own:-latest}"
+        fi
+        if [ "$BS_VERSION" != latest ] && ! [[ "$BS_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error::version must be latest or a vX.Y.Z tag, not $BS_VERSION"; exit 1
+        fi
+        case "$RUNNER_OS" in
+          Linux) os=linux ;; macOS) os=darwin ;; Windows) os=windows ;;
+          *) echo "::error::bootstrapping has no build for $RUNNER_OS"; exit 1 ;;
+        esac
+        case "$RUNNER_ARCH" in
+          X64) arch=amd64 ;; ARM64) arch=arm64 ;;
+          *) echo "::error::bootstrapping has no build for $RUNNER_ARCH"; exit 1 ;;
+        esac
+        if [ "$os" = windows ] && [ "$arch" != amd64 ]; then echo "::error::bootstrapping has no Windows $arch build"; exit 1; fi
+        ext=tar.gz; [ "$os" = windows ] && ext=zip
+        name="bootstrapping_${os}_${arch}.${ext}"
+        dir="$RUNNER_TEMP/bootstrapping-bin"
+        rm -rf "$dir"
+        mkdir -p "$dir"
+        cd "$dir"
+        base() {
+          if [ "$1" = latest ]; then echo "https://github.com/bootstrapping-engine/bootstrapping/releases/latest/download"
+          else echo "https://github.com/bootstrapping-engine/bootstrapping/releases/download/$1"; fi
+        }
+        if ! curl -fsSL --retry 3 -o "$name" "$(base "$BS_VERSION")/$name"; then
+          # A copy of the action from main can name a version not published yet.
+          if [ -n "$own" ]; then
+            echo "::notice::$BS_VERSION isn't published; using the latest release"
+            BS_VERSION=latest
+            curl -fsSL --retry 3 -o "$name" "$(base latest)/$name" || { echo "::error::could not download $name"; exit 1; }
+          else
+            echo "::error::could not download $(base "$BS_VERSION")/$name"; exit 1
+          fi
+        fi
+        curl -fsSL --retry 3 -o SHA256SUMS "$(base "$BS_VERSION")/SHA256SUMS" || { echo "::error::could not download SHA256SUMS"; exit 1; }
+        want=$(awk -v n="$name" '$2==n || $2=="*"n {print $1}' SHA256SUMS)
+        if command -v sha256sum >/dev/null; then got=$(sha256sum "$name" | cut -d' ' -f1); else got=$(shasum -a 256 "$name" | cut -d' ' -f1); fi
+        if [ -z "$want" ] || [ "$want" != "$got" ]; then echo "::error::$name does not match SHA256SUMS"; exit 1; fi
+        if [ "$ext" = zip ]; then unzip -oq "$name"; bin="$dir/bootstrapping.exe"; else tar -xzf "$name"; bin="$dir/bootstrapping"; fi
+        "$bin" version
+        echo "bin=$bin" >> "$GITHUB_OUTPUT"
+        echo "version=$BS_VERSION" >> "$GITHUB_OUTPUT"
+
+    - name: Plan
+      id: plan
+      shell: bash
+      env:
+        BS_BIN: ${{ steps.install.outputs.bin }}
+        IN_DB: ${{ inputs.database }}
+        IN_SEEDS: ${{ inputs.seeds }}
+        IN_FAIL: ${{ inputs.fail-on-conflict }}
+        IN_COMMENT: ${{ inputs.comment }}
+      run: |
+        # The runner starts bash with -e; a pending plan exits 2 and must not
+        # end the step before the exit code is recorded.
+        set +e -u
+        # A typo in a switch must not let a conflict pass, so only true and
+        # false count.
+        for v in "fail-on-conflict=$IN_FAIL" "comment=$IN_COMMENT"; do
+          case "${v#*=}" in true|false) ;; *)
+            echo "::error::${v%%=*} must be true or false, not ${v#*=}"
+            echo "exit-code=1" >> "$GITHUB_OUTPUT"; echo "result=error" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+        done
+        out="$RUNNER_TEMP/bootstrapping-plan-$GITHUB_ACTION.md"
+        err="$RUNNER_TEMP/bootstrapping-plan-$GITHUB_ACTION.err"
+        echo "plan=$out" >> "$GITHUB_OUTPUT"
+        "$BS_BIN" plan -markdown -db "$IN_DB" -seeds "$IN_SEEDS" > "$out" 2> "$err"
+        code=$?
+        cat "$out"
+        if [ -s "$err" ]; then cat "$err" >&2; fi
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        case $code in
+          0) result=in-step ;; 2) result=pending ;; 3) result=blocked ;; *) result=error ;;
+        esac
+        echo "result=$result" >> "$GITHUB_OUTPUT"
+        if [ "$result" = error ]; then
+          # The error, never the database URL, goes into the comment.
+          { echo "**Bootstrapping couldn't make the plan** for \`$IN_SEEDS\`:"; echo; echo '```'; head -c 4000 "$err"; echo; echo '```'; } > "$out"
+        fi
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then cat "$out" >> "$GITHUB_STEP_SUMMARY"; fi
+        exit 0
+
+    - name: Comment on the pull request
+      id: comment
+      if: ${{ inputs.comment == 'true' && (inputs.pull-request || github.event.pull_request.number) && steps.plan.outputs.plan != '' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR: ${{ inputs.pull-request || github.event.pull_request.number }}
+        PLAN: ${{ steps.plan.outputs.plan }}
+        IN_SEEDS: ${{ inputs.seeds }}
+      run: |
+        set -uo pipefail
+        # One comment per seed folder, found again by a marker it carries.
+        marker="<!-- bootstrapping-plan seeds=$(printf '%s' "$IN_SEEDS" | sed 's/--/-/g') -->"
+        body="$RUNNER_TEMP/bootstrapping-comment-$GITHUB_ACTION.md"
+        { echo "$marker"; cat "$PLAN"; } > "$body"
+        api="repos/$GITHUB_REPOSITORY/issues"
+        id=$(gh api --paginate "$api/$PR/comments" 2>/dev/null | jq -r --arg m "$marker" '.[] | select(.body | startswith($m)) | .id' | head -n 1)
+        if [ -n "$id" ]; then
+          url=$(gh api -X PATCH "$api/comments/$id" -F "body=@$body" --jq .html_url)
+        else
+          url=$(gh api -X POST "$api/$PR/comments" -F "body=@$body" --jq .html_url)
+        fi
+        if [ -z "$url" ]; then
+          echo "::warning::couldn't comment on the pull request (a pull request from a fork gets a read-only token); the plan is in the job summary"
+          exit 0
+        fi
+        echo "url=$url" >> "$GITHUB_OUTPUT"
+        echo "id=${url##*issuecomment-}" >> "$GITHUB_OUTPUT"
+        echo "Plan comment: $url"
+
+    - name: Verdict
+      shell: bash
+      env:
+        CODE: ${{ steps.plan.outputs.exit-code }}
+        FAIL: ${{ inputs.fail-on-conflict }}
+      run: |
+        case "$CODE" in
+          0) echo "bootstrapping: the database is in step with the seed" ;;
+          2) echo "bootstrapping: an apply would write; see the plan above" ;;
+          3) if [ "$FAIL" = true ]; then echo "::error::bootstrapping: the plan has a conflict nobody settled, so an apply would stop; see the plan"; exit 1; fi
+             echo "bootstrapping: the plan has a conflict (fail-on-conflict: false, so the step passes)" ;;
+          *) echo "::error::bootstrapping couldn't make the plan (exit $CODE); see the log above"; exit 1 ;;
+        esac

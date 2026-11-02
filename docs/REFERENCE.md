@@ -70,9 +70,11 @@ step can find the comment it posted before and replace it. Past 60,000
 characters the table stops with a count of the changes left out, keeping
 the comment under GitHub's limit.
 
-A plan shows what a seed change does to a database, so CI needs one that
-looks like production. A fresh database with the base branch's seeds
-applied works well: the plan is then exactly what the pull request changes.
+The GitHub Action in this repository does the posting for you:
+[ACTION.md](ACTION.md). By hand, a plan shows what a seed change does to a
+database, so CI needs one that looks like production. A fresh database with
+the base branch's seeds applied works well: the plan is then exactly what
+the pull request changes.
 
 ```yaml
 name: seed plan
@@ -144,9 +146,9 @@ import "github.com/bootstrapping-engine/bootstrapping"
 | `History(ctx, db, n) ([]Run, error)` | the last n applies, newest first |
 | `Init(ctx, db) error` | creates the ledger tables |
 
-`db` is a `*sql.DB` from any SQLite or PostgreSQL driver; the package tells
+`db` is a `*sql.DB` from any SQLite, PostgreSQL or MySQL driver; the package tells
 which it is talking to and doesn't import a driver. The commands use
-mattn/go-sqlite3 and lib/pq.
+modernc.org/sqlite (pure Go), lib/pq and go-sql-driver/mysql.
 
 ```go
 type Options struct {
@@ -221,6 +223,64 @@ are passed to the server as settings for the connection.
   one server connection. Behind PgBouncer in transaction mode, connect the
   command or the library directly to the server, or use session mode.
 
+## MySQL and MariaDB
+
+MySQL 8.0 or later and MariaDB 10.6 or later. Give the command a URL that
+names the database:
+
+```sh
+bst plan -db 'mysql://app:secret@db.internal:3306/app?tls=true' -seeds seeds
+bst plan -db 'mariadb://app@localhost/app?socket=/run/mysqld/mysqld.sock' -seeds seeds
+```
+
+Other parameters go to the driver (go-sql-driver/mysql) as its own:
+`tls=true` or `tls=skip-verify`, `timeout=10s`, and so on. A password with
+`@` or `/` in it is written percent-encoded (`%40`, `%2F`). The library
+takes any `*sql.DB` opened with that driver.
+
+- **Session settings**: each plan or apply runs on one connection with
+  sql_mode set to strict (`STRICT_ALL_TABLES` with `NO_ZERO_DATE` and the
+  rest) and time_zone to `+00:00`, and puts both back as it found them
+  before the connection returns to the pool. Names are quoted with
+  backticks, so the connection's own sql_mode, `ANSI_QUOTES` or not,
+  doesn't matter.
+- **Values** are compared as the server prints them (`CAST(x AS CHAR)`, hex
+  for binary types). Seed values are converted by the server: each is
+  stored, in strict mode, in a temporary table whose column has the real
+  column's type, character set and collation, and read back. So `7` in a
+  `DECIMAL(10,2)` column is `7.00`, a `SET` value is put in its order, and a
+  value that doesn't fit (text too long, a number out of range, a value
+  not in the `ENUM`) stops the plan with the row and column named, rather
+  than being stored cut short with a warning. Integer, floating-point and
+  binary values show as numbers and blobs in plans and the ledger;
+  `BIGINT UNSIGNED`, `DECIMAL` and every other type show as text.
+- **Locking**: an apply takes a named lock (`GET_LOCK`, one per database),
+  then plans and writes in a single REPEATABLE READ transaction, reading
+  the managed tables with shared locks. A second apply waits for the lock
+  and finds nothing to do. An admin who edits a managed row during an apply
+  waits until it commits; the edit then lands on top and the next plan
+  keeps it. If InnoDB has to break a deadlock between the two, it rolls
+  back the smaller transaction, usually the admin's statement, which fails
+  with an error and can be run again; nothing is written over silently.
+- **Preview** and `plan` take no lock. They need to create temporary tables
+  (the `CREATE TEMPORARY TABLES` privilege).
+- **The ledger** tables are created before the apply's transaction, since
+  MySQL commits on any `CREATE TABLE`, and only once a plan shows the apply
+  will write. A row key may be up to 2,816 bytes.
+- **Keys** are compared as exact text by Bootstrapping, while the server
+  compares them under the column's collation. With a collation that
+  ignores case or trailing spaces (MySQL's default `utf8mb4_0900_ai_ci`
+  ignores case and accents), two seed keys that differ only that way are
+  one row to the server: the plan inserts both and the insert fails on the
+  unique key. Give key columns a binary collation (`utf8mb4_bin`, or
+  `utf8mb4_0900_bin` on MySQL 8 to also tell trailing spaces apart), or
+  keep keys distinct. Floating-point key columns aren't supported.
+- **References**: the table a reference points at needs a one-column
+  primary key. A row that refers to itself has that reference cleared
+  before it is deleted, since InnoDB won't delete it otherwise.
+- **Retire columns** must be able to hold the time of the apply: text,
+  `DATE`, `DATETIME` or `TIMESTAMP` (written in UTC).
+
 ## The ledger
 
 Four tables in the application's database (on PostgreSQL, in the first
@@ -234,7 +294,8 @@ schema of the search path), created on the first apply:
 | `_bootstrapping_refs` | per reference column: the `[refs]` entry last applied, so a column the seed stops naming is still read by natural key |
 
 Values are kept losslessly as `n` (NULL), `i:42`, `r:1.5`, `t:text` or
-`b:base64`. The ledger is written in the same transaction as the data, so
+`b:base64`, and the value of a reference by several columns as `k:` and
+the JSON list of its parts' encodings (`k:["t:eu","t:editor"]`). The ledger is written in the same transaction as the data, so
 the two never disagree.
 
 Deleting the ledger tables makes every row look unmanaged; the next apply

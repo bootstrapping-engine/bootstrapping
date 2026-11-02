@@ -1,152 +1,42 @@
 # Third-party licenses
 
-Bootstrapping itself is licensed under the Apache License, Version 2.0 (see
-LICENSE and NOTICE). Its Go package and its ready-built commands include
-the code below.
+Bootstrapping is under the Apache License 2.0 (see [LICENSE](LICENSE) and
+[NOTICE](NOTICE)). The Go package uses BurntSushi/toml and imports no
+database driver. The bootstrapping, bst and bootstrapping-demo commands and
+their ready-built binaries also contain the Go modules below. Every release
+archive carries a THIRD_PARTY_LICENSES.md with the full license text of
+each module actually compiled in, written by
+[scripts/third-party-licenses.sh](scripts/third-party-licenses.sh) from the
+module sources at build time. Run that script to see the same texts for any
+commit.
 
-## BurntSushi/toml
+| Module | Version | License |
+|---|---|---|
+| github.com/BurntSushi/toml | v1.6.0 | MIT |
+| github.com/lib/pq | v1.12.3 | MIT |
+| github.com/go-sql-driver/mysql | v1.10.1 | Mozilla Public License 2.0 |
+| filippo.io/edwards25519 | v1.2.0 | BSD 3-Clause |
+| modernc.org/sqlite | v1.60.1 | BSD 3-Clause; the SQLite code it is translated from is in the public domain |
+| modernc.org/libc | v1.77.1 | BSD 3-Clause, plus the third-party notices in its source |
+| modernc.org/mathutil | v1.7.1 | BSD 3-Clause |
+| modernc.org/memory | v1.12.1 | BSD 3-Clause |
+| golang.org/x/sys | v0.48.0 | BSD 3-Clause |
+| github.com/google/uuid | v1.6.0 | BSD 3-Clause |
+| github.com/remyoudompheng/bigfft | v0.0.0-20230129092748 | BSD 3-Clause |
+| github.com/dustin/go-humanize | v1.0.1 | MIT |
+| github.com/mattn/go-isatty | v0.0.24 | MIT |
+| github.com/ncruces/go-strftime | v1.0.0 | MIT |
+| The Go runtime and standard library | 1.26 | BSD 3-Clause |
 
-Reads the seed files. Used by the Go package and compiled into every
-binary.
+The list follows go.mod. A module that go.mod names but the commands don't
+compile in is left out of the archive's file.
 
-```
-The MIT License (MIT)
+go-sql-driver/mysql is under the Mozilla Public License 2.0, a file-level
+copyleft licence. Bootstrapping uses it unchanged; its source code is
+available at https://github.com/go-sql-driver/mysql (version v1.10.1).
 
-Copyright (c) 2013 TOML authors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-```
-
-## mattn/go-sqlite3
-
-The SQLite driver compiled into the bootstrapping, bst and
-bootstrapping-demo commands. The Go package itself works with any
-database/sql driver for SQLite and doesn't import it.
-
-```
-The MIT License (MIT)
-
-Copyright (c) 2014 Yasuhiro Matsumoto
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-## lib/pq
-
-The PostgreSQL driver compiled into the bootstrapping and bst commands. The
-Go package itself works with any database/sql driver for PostgreSQL and
-doesn't import it.
-
-```
-MIT License
-
-Copyright (c) 2011-2013, 'pq' Contributors. Portions Copyright (c) 2011 Blake Mizerany
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-## SQLite
-
-SQLite 3.53.4, compiled into the commands through mattn/go-sqlite3. SQLite
-is in the public domain. Its source carries this dedication in place of a
-license:
-
-```
-The author disclaims copyright to this source code.  In place of
-a legal notice, here is a blessing:
-
-   May you do good and not evil.
-   May you find forgiveness for yourself and forgive others.
-   May you share freely, never taking more than you give.
-```
-
-## Go
-
-The Go runtime and standard library, compiled into every Multivergence binary.
-
-```
-Copyright 2009 The Go Authors.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-   * Redistributions of source code must retain the above copyright
-notice, this list of conditions and the following disclaimer.
-   * Redistributions in binary form must reproduce the above
-copyright notice, this list of conditions and the following disclaimer
-in the documentation and/or other materials provided with the
-distribution.
-   * Neither the name of Google LLC nor the names of its
-contributors may be used to endorse or promote products derived from
-this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-```
-
-## Operating system libraries
-
-The Linux and Windows binaries are statically linked: the C library the
-SQLite driver needs is compiled in (glibc on Linux, licensed under the GNU
-Lesser General Public License with its static-linking terms satisfied by
-this project's source being public; MinGW-w64's runtime on Windows, under
-permissive licenses). The macOS binaries call the operating system's own
-libraries at run time; those are not copied into the archives.
+The binaries are pure Go (built with CGO_ENABLED=0), so no C library is
+copied into them. The macOS binaries call the operating system's own
+libSystem, and the Windows binaries its system DLLs; neither is copied into
+the archives. Bootstrapping 0.2 used the cgo driver github.com/mattn/go-sqlite3
+and linked the mingw-w64 runtime on Windows; neither is in 0.3 or later.

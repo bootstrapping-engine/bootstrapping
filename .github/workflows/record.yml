@@ -1,0 +1,72 @@
+name: record
+
+# Runs scripts/record-tests.sh on GitHub, on SQLite, PostgreSQL 16 and
+# MySQL 8.4, and commits test/results to main. Started by hand (or through
+# the API) when the results should be refreshed, before a release:
+#   gh api -X POST repos/bootstrapping-engine/bootstrapping/actions/workflows/record.yml/dispatches -f ref=main
+# The commit is made with the repository's own token, so it doesn't start
+# the test or release workflows. If any test, the demo or the smoke check
+# fails, nothing is committed.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: record
+  cancel-in-progress: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: write
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ["3306:3306"]
+    env:
+      CGO_ENABLED: "0"
+      BS_POSTGRES: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+      BS_MYSQL: mysql://root:root@127.0.0.1:3306/
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+      - name: Wait for MySQL
+        run: |
+          c="${{ job.services.mysql.id }}"
+          for i in $(seq 1 90); do
+            v=$(docker exec "$c" mysql -uroot -proot -N -e 'SELECT VERSION()' 2>/dev/null) && {
+              echo "BS_MYSQL_VERSION=MySQL $v" >> "$GITHUB_ENV"; exit 0; }
+            sleep 2
+          done
+          exit 1
+      - name: Record
+        run: sh scripts/record-tests.sh
+      - name: Commit the results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add test/results
+          if git diff --cached --quiet; then
+            echo "No change in the results."
+            exit 0
+          fi
+          git commit -m "Record test results for $(git rev-parse --short HEAD)"
+          git push origin HEAD:main

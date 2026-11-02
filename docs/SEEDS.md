@@ -160,6 +160,29 @@ link to a role added in the same apply works, a link by a value the same
 apply changes finds the new value, and a table can refer to itself (a
 role's parent role).
 
+### A row named by several columns
+
+When the referenced table's rows are told apart only by two or more columns
+together, such as a region and a code, the reference names them all:
+
+```toml
+[refs]
+role_id = "roles.(region, code)"
+
+[[row]]
+code = "g1"
+role_id = ["eu", "editor"]
+```
+
+The row gives one value per column, in the order the reference lists them.
+In a CSV file the cell joins them with `|`: `eu|editor`, so the values
+themselves can't contain a `|` there (write such rows in TOML). An empty
+cell is NULL, no role at all. The columns together must tell the
+referenced table's rows apart. Plans show the value as `("eu", "editor")`,
+and keys that hold one as `eu|editor`. Everything a reference by one
+column does works the same: skips, renames followed, rows kept while
+something points at them, and a table referring to itself.
+
 A row whose reference names a row that doesn't exist is skipped, not
 guessed at, and tried again on the next apply. A reference declared under
 `[refs]` that no row sets is still managed: it is NULL in the seed.

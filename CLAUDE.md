@@ -29,20 +29,24 @@ command), `on_remove` keep/delete/retire, `on_local_delete`
 respect/restore, `_renamed_from`, references by natural key (`[refs]`,
 including a table referring to itself), and one transaction per apply.
 
-The library (root package) works with any `database/sql` driver for SQLite
-or PostgreSQL and imports none; `dialect.go` tells them apart and holds
-what differs (placeholders, schema reading, value comparison, locking).
-On SQLite an apply is one `BEGIN IMMEDIATE` transaction; on PostgreSQL a
-session advisory lock (two keys: Bootstrapping, current schema) and one
-REPEATABLE READ transaction, values compared as the text the server prints
-under fixed session settings, seed values cast by the server. The commands
+The library (root package) works with any `database/sql` driver for SQLite,
+PostgreSQL, MySQL or MariaDB and imports none; `dialect.go` tells them
+apart and holds what differs (placeholders, schema reading, value
+comparison, locking), `mysql.go` the MySQL parts. On SQLite an apply is one
+`BEGIN IMMEDIATE` transaction; on PostgreSQL a session advisory lock (two
+keys: Bootstrapping, current schema) and one REPEATABLE READ transaction,
+values compared as the text the server prints under fixed session settings,
+seed values cast by the server. On MySQL (from 0.3) `GET_LOCK`, fixed
+sql_mode and time_zone restored afterwards, one REPEATABLE READ
+transaction with locked reads during an apply, values as `CAST(x AS CHAR)`,
+seed values converted through a temporary table of the column's type, the
+ledger created before the transaction. The package's SQL quotes names with
+double quotes; `rebind` turns them into backticks for MySQL. The commands
 (`cmd/bootstrapping`, `cmd/bst`, and the demo `examples/permissions`,
-shipped as `bootstrapping-demo`) use mattn/go-sqlite3, which is cgo, and
-lib/pq (pure Go; pgx couldn't be fetched, its module graph needs
-gopkg.in). Builds need a C compiler, and the release workflow builds each
-target on its own kind of machine (MSYS2 MinGW on Windows).
-modernc.org/sqlite was the first choice but is hosted on GitLab, which the
-build sessions can't reach.
+shipped as `bootstrapping-demo`) use modernc.org/sqlite (pure Go, from
+0.3), lib/pq and go-sql-driver/mysql; builds need no C compiler.
+This session's Go proxy is blocked: new dependencies are resolved by the
+`tidy` workflow (RELEASING.md).
 
 Read [docs/MERGE.md](docs/MERGE.md) before changing how plans are made: it
 is the contract `promise_test.go` checks. [docs/SEEDS.md](docs/SEEDS.md) is
@@ -62,13 +66,16 @@ convert BOOLEAN, DATE and DATETIME values by type name.
 `BS_SCALE` to change it), the race detector, the release plan's cases, the
 demo and the smoke check on static binaries, and writes them to
 `test/results/`, with JSON figures from the promise, references, crash,
-process and affinity tests. With `BS_POSTGRES` set to a server URL, the
-tests that run on every database (`eachBackend`) run on PostgreSQL too,
-each in its own schema, and write `*-postgres.json`; record with it set.
-PostgreSQL 16 is installed in the build image: initdb into /var/tmp as the
-postgres user and start it on a socket in /tmp. Every number in the README
-and on the site comes from those files; record again after any change that
-could move them. It needs Go, a C compiler and Python 3.
+process and affinity tests. With `BS_POSTGRES` and `BS_MYSQL` set to server
+URLs, the tests that run on every database (`eachBackend`) run on those too
+and write `*-postgres.json` and `*-mysql.json`. The `record` workflow runs
+it on GitHub with PostgreSQL 16 and MySQL 8.4 and commits the files; local
+cloud sessions can't fetch modernc.org, so record there. Every number in
+the README and on the site comes from those files; record again after any
+change that could move them. Locally, MySQL 8.0 and MariaDB 10.11 can be
+installed from apt (MariaDB unpacked into /var/tmp/maria), and the root
+package's MySQL and PostgreSQL tests run in a scratch module without the
+SQLite driver (`BS_BACKENDS=mysql`).
 
 ## Site
 
@@ -92,8 +99,12 @@ Design decisions:
 - Phase A, MySQL 8.0+ and MariaDB 10.6+ as a third dialect. Detected after
   the PostgreSQL and SQLite probes. Each plan or apply runs on one session with
   fixed settings, restored afterwards: sql_mode
-  `ANSI_QUOTES,STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_VALUE_ON_ZERO,NO_BACKSLASH_ESCAPES`
-  (so the package's double-quoted names work) and time_zone `+00:00`.
+  `STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_VALUE_ON_ZERO,NO_BACKSLASH_ESCAPES,NO_ENGINE_SUBSTITUTION`
+  and time_zone `+00:00`; the package's double-quoted names are turned into
+  backticks (changed from ANSI_QUOTES, which wouldn't cover reads outside
+  the transaction). During an apply the managed tables are read with shared
+  locks (InnoDB's REPEATABLE READ doesn't fail a write over a concurrent
+  edit as PostgreSQL's does; found in testing).
   An apply takes `GET_LOCK` on a name built from the database, then one
   REPEATABLE READ transaction. Values are compared as the text the server
   prints (`CAST(col AS CHAR)`, HEX for binary types), like PostgreSQL;
@@ -104,7 +115,8 @@ Design decisions:
   fit is reported by name and nothing is ever stored shortened. The ledger
   gets MySQL DDL (no TEXT keys: table names VARCHAR(64), row keys
   VARBINARY(2816), binary collations) and is created before the transaction,
-  since DDL commits implicitly there. The ledger's `key` column is quoted
+  since DDL commits implicitly there, and only once a plan shows the apply
+  will write (a blocked apply writes nothing). The ledger's `key` column is quoted
   everywhere (a reserved word in MySQL). Upserts use ON DUPLICATE KEY UPDATE.
   A referenced table needs a one-column primary key. Collations that ignore
   case or trailing spaces are documented: keys must match exactly.
@@ -133,8 +145,8 @@ Steps:
 1. [x] Upkeep: modernc SQLite, go 1.26, CI without the 1.24 job and cgo (84fd219, CI green on 3 OS).
 2. [ ] Phase A: MySQL/MariaDB dialect, CI jobs, tests.
 3. [x] Phase B2: composite references, tests (composite_test.go: TOML and CSV, skip, edits, renames, protected rows, self references, mistakes).
-4. [ ] Phase B1: the Action and its test workflow.
-5. [ ] Docs (README, SEEDS, REFERENCE, MERGE where it applies).
+4. [x] Phase B1: the Action (action.yml) and its test workflow (action-test.yml: local on 3 OS, comment on a kept issue, download after each release).
+5. [x] Docs (README, SEEDS, REFERENCE, ACTION, RELEASING, NOTICE, THIRD_PARTY_LICENSES with a generated per-archive file; record workflow).
 6. [ ] Independent review (at most two rounds), fixes, fresh test/results.
 7. [ ] 0.3.0 released by the workflow, downloads checked.
 8. [ ] bootstrapping.org post with its own SVG, pages; softdevstudio.com

@@ -9,12 +9,16 @@
 # JSON file of their figures there. The numbers in the README and on
 # bootstrapping.org come from these files.
 #
-#   BS_POSTGRES=postgres://user@host/db?sslmode=disable sh scripts/record-tests.sh
+#   BS_POSTGRES=postgres://user@host/db?sslmode=disable \
+#   BS_MYSQL=mysql://root:secret@127.0.0.1:3306/ sh scripts/record-tests.sh
 #
 # Needs Go and Python 3 (and a C compiler for the race detector). With
 # BS_POSTGRES naming a PostgreSQL server, the tests that run on every
 # database run on it too, each in a schema of its own, and their figures
-# are written as *-postgres.json; without it, only SQLite is recorded.
+# are written as *-postgres.json; with BS_MYSQL naming a MySQL or MariaDB
+# server, the same in a database of its own each, written as *-mysql.json
+# (BS_MYSQL_VERSION, if set, is noted in the header). Without them, only
+# SQLite is recorded. The record workflow runs this on GitHub with both.
 set -eu
 cd "$(dirname "$0")/.."
 out=test/results
@@ -44,13 +48,18 @@ if [ -n "${BS_POSTGRES:-}" ]; then
 	pg=$(psql "$BS_POSTGRES" -Atc 'SHOW server_version' 2>/dev/null || echo 'version unknown')
 	cmd="$cmd  (with BS_POSTGRES set: PostgreSQL $pg)"
 else
-	echo "BS_POSTGRES isn't set: recording SQLite only" >&2
+	echo "BS_POSTGRES isn't set: PostgreSQL isn't recorded" >&2
+fi
+if [ -n "${BS_MYSQL:-}" ]; then
+	cmd="$cmd  (with BS_MYSQL set: ${BS_MYSQL_VERSION:-MySQL, version unknown})"
+else
+	echo "BS_MYSQL isn't set: MySQL isn't recorded" >&2
 fi
 { header "Every test, verbose, at $scale times the CI size; the tests that measure something also write the JSON files here" "$cmd"
   BS_SCALE=$scale BS_RESULTS="$(pwd)/$out" go test -count=1 -v -timeout 120m ./... 2>&1; } > "$out/tests.txt"
 
-cmd="go test -race -count=1 ./..."
-{ header "Every test with the race detector, at CI size, on SQLite" "$cmd"; env -u BS_POSTGRES $cmd 2>&1; } > "$out/race.txt"
+cmd="CGO_ENABLED=1 go test -race -count=1 ./..."
+{ header "Every test with the race detector, at CI size, on SQLite" "$cmd"; env -u BS_POSTGRES -u BS_MYSQL CGO_ENABLED=1 go test -race -count=1 ./... 2>&1; } > "$out/race.txt"
 
 cmd="python3 -B -m unittest discover -s scripts -p *_test.py -v"
 { header "The release plan's cases" "$cmd"; $cmd 2>&1; } > "$out/release-plan.txt"
