@@ -448,7 +448,7 @@ func TestErrorsHideTheDatabaseURL(t *testing.T) {
 		{"jdbc:mysql://app:hunter22@db.example/app", "hunter22"},
 		{`postgres://app:pa"ss%zz@127.0.0.1:1/db`, `pa"ss`},
 		{`postgres://app:pa\ss%zzword@127.0.0.1:1/db`, `ss%zzword`},
-		{`postgres://app:pa"ssword@127.0.0.1:1/db`, `ssword`},
+		{`postgres://app:pa"sQx9w@127.0.0.1:1/db`, `sQx9w`},
 	} {
 		for _, json := range []bool{false, true} {
 			args := []string{"plan", "-db", c.db, "-seeds", seeds}
