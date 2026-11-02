@@ -4,6 +4,12 @@ This file says where the next session starts and what comes next. What comes
 next is decided with the owner before it goes here, and work starts only when
 the owner says go.
 
+## Where the next session starts
+
+Bootstrapping 0.3.0 is released (MySQL and MariaDB, references by several
+columns, the GitHub Action) and softdev-plan item 29 is done. Nothing is in
+progress; what comes next is decided with the owner.
+
 ## Releases
 
 Releases are automated. To release, raise `Version` in `bootstrapping.go` and
@@ -18,7 +24,8 @@ PostgreSQL 12+ support, CSV seed files (`rows = "file.csv"`) and
 leaves out a managed NOT NULL column, found while writing the case studies:
 four example programs in `examples/` (plans, countries, workflow,
 templates) on `examples/internal/story`, run by `go test`, each with a
-case study post on the site. Apache 2.0, CI on Linux, macOS
+case study post on the site. v0.3.0 (November 2026) added MySQL 8.0+ and
+MariaDB 10.6+, references by several columns and the GitHub Action. Apache 2.0, CI on Linux, macOS
 and Windows plus a PostgreSQL job (13 and 18), and automated releases with
 smoke-tested binaries for Linux, macOS and Windows. Bootstrapping is a seed
 reconciler: TOML or CSV seed files per table, a three-way merge per value
@@ -88,7 +95,7 @@ reference data drift, how it was tested, the name, the 0.2 release, and
 four case studies tagged "case studies", one per example program. Images are drawn
 into static/images. When a recording changes a number, update the site too.
 
-## In progress: Bootstrapping 0.3 (softdev-plan item 29, approved by YK 2026-11-02)
+## Done: Bootstrapping 0.3 (softdev-plan item 29, approved by YK 2026-11-02)
 
 What and why: most Rails, Laravel and Django apps with reference data run on
 MySQL or MariaDB, which Bootstrapping can't touch; `plan -markdown` exists but
@@ -150,6 +157,5 @@ Steps:
 6. [x] Independent review (at most two rounds), fixes, fresh test/results (record run 41459486243 on 442c311, go1.26.10, PostgreSQL 16 and MySQL 8.4: all pass, race too; the merge figures are identical on all three databases).
    Review round 1: blocker, the database URL with its password could reach a public PR comment through CLI errors (url.Parse and lib/pq quote it, and "no database at" echoed unknown schemes); fixed by redact() on every CLI error, generic parse errors, and the Action scrubbing and masking the URL (test: TestErrorsHideTheDatabaseURL, an action-test step). Should-fix, all fixed: MyISAM/MEMORY tables broke all-or-nothing (now refused, TestMySQLNonTransactionalTable); the Action's comment lookup trusted any commenter's marker (now only comment-author's, a failed listing warns instead of duplicating); latest was resolved twice (now once, both files from one tag; the download path now runs on 3 OS before release). Nits fixed: composite parts prefetched per column, docs (GTID, NOT NULL self refs, ledger downgrade, CSV null marker, forks), stale doc comments, GET_LOCK message. Left: VALUES() in upserts (works on 8.4 and MariaDB), tuple text with | colliding under -take (same as 0.2's comma-joined keys).
    Round 2: one should-fix, a postgres password with " or \ leaked through Go's %q-escaped parse error; fixed (postgres URLs parsed before lib/pq, redact() also replaces quoted forms, cases added). Nits fixed: a latest step in action-test, views on MyISAM documented.
-7. [ ] 0.3.0 released by the workflow, downloads checked.
-8. [ ] bootstrapping.org post with its own SVG, pages; softdevstudio.com
-   note; softdev-plan log row.
+7. [x] 0.3.0 released by the workflow (3e8a8f8, release run 41474067005). All five archives match SHA256SUMS at the tag and at latest. The downloaded Linux binary prints 0.3.0, the demo passes (17 checks), and the quick start's MySQL steps (schema with BIGINT AUTO_INCREMENT, VARCHAR(64) codes, `system` quoted) ran on local MySQL 8.0: 18 inserts, then 2 inserts and 2 updates, then in step; a wrong password's error showed no URL. action-test after the release (41475985833): download job green on 3 OS, pinned and latest.
+8. [x] bootstrapping.org post "Bootstrapping Now Runs on MySQL and MariaDB and Posts Seed Plans on Pull Requests" (no version dot in the title, like 0.2) with bootstrapping-0-3.svg (rasterized and inspected); about, download (Go 1.26, no C compiler, mysql:// URLs), quick start (MySQL section) and reference (composite refs, MySQL, the Action, limits) pages (site 00323e1); softdevstudio.com note and listing (e5a72ca); softdev-plan item 29 done with a log row.
