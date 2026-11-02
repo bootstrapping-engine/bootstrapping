@@ -276,8 +276,8 @@ value by value.
 
 Every number here comes from [test/results](test/results), recorded by
 `sh scripts/record-tests.sh` at ten times the size CI runs on every push,
-on SQLite and on PostgreSQL 16. CI runs the same tests on every push with
-PostgreSQL 13 and 18.
+on SQLite, PostgreSQL 16 and MySQL 8.4. CI runs the same tests on every push
+with PostgreSQL 13 and 18, MySQL 8.0 and 8.4, and MariaDB 10.6 and 11.8.
 
 - **The promise, on random histories.** 1,200 histories of 12 seed versions
   each, with an admin editing, deleting and adding rows between versions.
@@ -297,8 +297,8 @@ PostgreSQL 13 and 18.
   were conflicts settled for the seed).
 - **Killed halfway.** 400 applies of a 1,500-row seed, killed with SIGKILL
   after a random statement or at a random moment. Every one left the
-  database exactly as it was (270) or exactly as a finished apply leaves it
-  (130), passed SQLite's integrity check, and reached the clean result when
+  database exactly as it was (255) or exactly as a finished apply leaves it
+  (145), passed SQLite's integrity check, and reached the clean result when
   applied again.
 - **Many processes, one file.** 60 rounds of eight processes applying the
   same seed at once. Each round, exactly one wrote and seven found nothing
@@ -310,12 +310,19 @@ PostgreSQL 13 and 18.
   PostgreSQL too, with the same seeds and the same admin edits, and every
   figure above came out identical: 492,228 values checked, 47,330 local
   edits kept, 6,000 applies through linked tables with no key broken. 100
-  applies killed halfway left the database as it was (73) or as a finished
-  apply leaves it (27), and 60 rounds of eight processes had exactly one
+  applies killed halfway left the database as it was (66) or as a finished
+  apply leaves it (34), and 60 rounds of eight processes had exactly one
   writer each. A types test runs values through 24 column types (numeric,
   jsonb, timestamptz, arrays, enums, domains and more), then plans again
   under five other session settings (time zone, date style and more), and
   none look changed.
+- **The same on MySQL.** The random histories, the linked tables, the
+  killed applies and the eight processes ran on MySQL 8.4 as well, and the
+  merge figures came out identical again: 492,228 values checked, 47,330
+  local edits kept, 6,000 applies through linked tables with no key
+  broken. 100 applies killed halfway left the database as it was (68) or
+  as a finished apply leaves it (32), and every round of eight processes
+  had exactly one writer.
 
 A test like the first is only worth something if it can fail. During
 development it was run against three deliberately broken versions of the

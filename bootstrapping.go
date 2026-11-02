@@ -24,4 +24,4 @@
 package bootstrapping
 
 // Version is the release, raised before a release goes out.
-const Version = "0.2.1"
+const Version = "0.3.0"
